@@ -94,36 +94,45 @@ impl Work {
         Ok(dir)
     }
 
+    /// A fresh worktree at `commit`. Only git's bookkeeping holds the lock:
+    /// the slow parts — deleting a previous tree (its installed
+    /// dependencies run to tens of thousands of files) and checking out the
+    /// files — touch this worktree alone and run outside it, so attempts do
+    /// not queue behind each other's disk work.
     fn worktree(&self, clone: &Path, commit: &str, name: &str) -> Result<PathBuf, String> {
-        let _held = self.lock();
         let path = self.root.join("runs").join(name);
-        if path.exists() {
+        self.drop_worktree(clone, &path);
+        {
+            let _held = self.lock();
+            git(
+                clone,
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    "--force",
+                    "--no-checkout",
+                    &path.display().to_string(),
+                    commit,
+                ],
+            )?;
+        }
+        // The worktree's index and files are its own.
+        git(&path, &["reset", "--hard", "--quiet"])?;
+        Ok(path)
+    }
+
+    fn drop_worktree(&self, clone: &Path, path: &Path) {
+        if path.exists() && std::fs::remove_dir_all(path).is_err() {
+            // What the filesystem would not delete, git may (it knows the
+            // tree); that one waits for the lock.
+            let _held = self.lock();
             let _ = git(
                 clone,
                 &["worktree", "remove", "--force", &path.display().to_string()],
             );
         }
-        let _ = git(clone, &["worktree", "prune"]);
-        git(
-            clone,
-            &[
-                "worktree",
-                "add",
-                "--detach",
-                "--force",
-                &path.display().to_string(),
-                commit,
-            ],
-        )?;
-        Ok(path)
-    }
-
-    fn drop_worktree(&self, clone: &Path, path: &Path) {
         let _held = self.lock();
-        let _ = git(
-            clone,
-            &["worktree", "remove", "--force", &path.display().to_string()],
-        );
         let _ = git(clone, &["worktree", "prune"]);
     }
 }
@@ -357,5 +366,134 @@ mod tests {
                    \"cache_creation_tokens\":3,\"cache_read_tokens\":400}}\n";
         assert_eq!(tokens_in(out), Some(523));
         assert_eq!(tokens_in("plain text, no json"), None);
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("insi-{label}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    /// **THE CONTROLS RUN FOR REAL.** In a two-commit repository whose fix
+    /// changes `a - b` to `a + b`, the check fails at the base and passes at
+    /// the reference; the hidden test file arrives in the worktree; each
+    /// attempt keeps its check output; no worktree is left behind; and the
+    /// fix's diff leaves out the hidden test.
+    #[test]
+    fn base_fails_reference_passes_and_nothing_is_left_behind() {
+        let source = temp_dir("src");
+        let sh = |args: &[&str]| git(&source, args).expect("git");
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.email", "t@example.invalid"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(
+            source.join("sum.ts"),
+            "export const sum = (a, b) => a - b;\n",
+        )
+        .expect("w");
+        sh(&["add", "."]);
+        sh(&["commit", "-q", "-m", "feat: sum"]);
+        let base = sh(&["rev-parse", "HEAD"]);
+        std::fs::write(
+            source.join("sum.ts"),
+            "export const sum = (a, b) => a + b;\n",
+        )
+        .expect("w");
+        std::fs::write(source.join("sum.test.ts"), "expect(sum(1, 2)).toBe(3);\n").expect("w");
+        sh(&["add", "."]);
+        sh(&["commit", "-q", "-m", "fix: sum adds"]);
+        let reference = sh(&["rev-parse", "HEAD"]);
+
+        let private = temp_dir("private");
+        let store = Store {
+            tasks: temp_dir("tasks"),
+            private: private.clone(),
+        };
+        let task = Task {
+            id: "demo-1".into(),
+            source: source.display().to_string(),
+            base,
+            reference,
+            date: None,
+            prompt: "fix: sum adds".into(),
+            hidden_tests: vec!["sum.test.ts".into()],
+            // Passes only where the fix is in, and only when the hidden test
+            // was copied in (`--no-index` reads files git does not track).
+            check: vec![
+                "git".into(),
+                "grep".into(),
+                "--no-index".into(),
+                "-q".into(),
+                "-e".into(),
+                "a + b".into(),
+                "--".into(),
+                "sum.ts".into(),
+                "sum.test.ts".into(),
+            ],
+            setup: vec![],
+            budget: insi_core::Budget {
+                wall_secs: 60,
+                tokens: None,
+            },
+        };
+        store
+            .save(&crate::mine::Mined {
+                task: task.clone(),
+                hidden: vec![(
+                    "sum.test.ts".into(),
+                    b"expect(sum(1, 2)).toBe(3);\n".to_vec(),
+                )],
+            })
+            .expect("saved");
+        let work = Work::new(temp_dir("work"));
+        let worker = Worker::incode();
+        let run_kind = |kind| {
+            attempt(
+                &work,
+                &store,
+                &Attempt {
+                    task: &task,
+                    kind,
+                    seed: 0,
+                    worker: &worker,
+                    preface: "",
+                    briefed: vec![],
+                    tags: vec![],
+                    keep: false,
+                },
+            )
+        };
+        let at_base = run_kind(Kind::Base);
+        assert_eq!(at_base.error, None);
+        assert!(!at_base.passed, "{at_base:?}");
+        let at_reference = run_kind(Kind::Reference);
+        assert_eq!(at_reference.error, None);
+        assert!(at_reference.passed, "{at_reference:?}");
+
+        for r in [&at_base, &at_reference] {
+            let dir = PathBuf::from(r.artifacts.as_deref().expect("artifacts"));
+            assert!(dir.join(CHECK_OUTPUT).is_file(), "{}", dir.display());
+        }
+        let runs: Vec<_> = std::fs::read_dir(work.root.join("runs"))
+            .map(|d| d.flatten().collect())
+            .unwrap_or_default();
+        assert!(runs.is_empty(), "worktrees left behind: {runs:?}");
+        let clone = work.clone_of(&task.source).expect("clone");
+        let listed = git(&clone, &["worktree", "list"]).expect("list");
+        assert_eq!(listed.lines().count(), 1, "{listed}");
+
+        let fix = fix_diff(&work, &task).expect("diff");
+        assert!(
+            fix.contains("+export const sum = (a, b) => a + b;"),
+            "{fix}"
+        );
+        assert!(
+            !fix.contains("sum.test.ts"),
+            "the hidden test leaked into the fix: {fix}"
+        );
     }
 }
