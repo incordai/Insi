@@ -61,14 +61,57 @@ pub struct Work {
     git_lock: std::sync::Mutex<()>,
     /// Background deletions of finished worktrees.
     reapers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Setups that may run at once. Installing dependencies is bound by the
+    /// disk, not the CPU: measured on Watchman, one `npm ci` alone took
+    /// under two minutes and three at once took over seventeen each.
+    setup_slots: Slots,
+}
+
+/// A counting semaphore.
+struct Slots {
+    free: std::sync::Mutex<usize>,
+    freed: std::sync::Condvar,
+}
+
+impl Slots {
+    fn new(n: usize) -> Slots {
+        Slots {
+            free: std::sync::Mutex::new(n.max(1)),
+            freed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn take(&self) -> SlotGuard<'_> {
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        while *free == 0 {
+            free = self.freed.wait(free).unwrap_or_else(|e| e.into_inner());
+        }
+        *free -= 1;
+        SlotGuard(self)
+    }
+}
+
+struct SlotGuard<'a>(&'a Slots);
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.free.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        self.0.freed.notify_one();
+    }
 }
 
 impl Work {
     pub fn new(root: PathBuf) -> Work {
+        Work::with_setup_jobs(root, 1)
+    }
+
+    /// A work folder where up to `setup_jobs` setups run at once.
+    pub fn with_setup_jobs(root: PathBuf, setup_jobs: usize) -> Work {
         let work = Work {
             root,
             git_lock: std::sync::Mutex::new(()),
             reapers: std::sync::Mutex::new(Vec::new()),
+            setup_slots: Slots::new(setup_jobs),
         };
         // What an earlier run left in the trash (it exited mid-delete).
         if let Ok(entries) = std::fs::read_dir(work.trash()) {
@@ -292,7 +335,7 @@ fn attempt_into(
         let tree = work.worktree(&clone, commit, &name)?;
         Ok::<_, String>((clone, tree))
     })?;
-    let outcome = run_in(&tree, &artifacts, store, a, result);
+    let outcome = run_in(work, &tree, &artifacts, store, a, result);
     // The attempt is over; taking its worktree away is not part of it.
     result.wall_secs = started.elapsed().as_secs_f64();
     if !a.keep {
@@ -347,6 +390,7 @@ fn keep(dir: &Path, file: &str, text: &str) -> Result<(), String> {
 }
 
 fn run_in(
+    work: &Work,
     tree: &Path,
     artifacts: &Path,
     store: &Store,
@@ -355,9 +399,12 @@ fn run_in(
 ) -> Result<(), String> {
     let task = a.task;
     if !task.setup.is_empty() {
+        // Waiting for a slot is its own phase, so it is never read as setup.
+        let slot = timed(result, "queue", || work.setup_slots.take());
         let setup = timed(result, "setup", || {
             process::run(&task.setup, tree, Duration::from_secs(SETUP_SECS))
         })?;
+        drop(slot);
         if !setup.success() {
             return Err(format!(
                 "setup failed ({}): {}",
@@ -386,11 +433,7 @@ fn run_in(
         // What the worker changed, new files included, before the hidden
         // tests are copied over it. The worktree's index is its own.
         git(tree, &["add", "--all"])?;
-        keep(
-            artifacts,
-            WORKER_DIFF,
-            &git(tree, &["diff", "--cached", "--no-color"])?,
-        )?;
+        keep(artifacts, WORKER_DIFF, &worker_diff(tree, a.worker)?)?;
     }
     // The hidden tests, only now: whatever the worker wrote at these paths
     // is replaced by the real check.
@@ -413,6 +456,26 @@ fn run_in(
         result.signature = Some(normalize(&check.tail()));
     }
     Ok(())
+}
+
+/// What the worker changed, without the files its harness writes for itself
+/// ([`Worker::own_files`]).
+fn worker_diff(tree: &Path, worker: &Worker) -> Result<String, String> {
+    let mut args = vec![
+        "diff".to_string(),
+        "--cached".to_string(),
+        "--no-color".to_string(),
+        "--".to_string(),
+        ".".to_string(),
+    ];
+    args.extend(
+        worker
+            .own_files
+            .iter()
+            .map(|p| format!(":(glob,exclude){p}")),
+    );
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    git(tree, &args)
 }
 
 /// The verified fix: what the reference commit changed, read from Insi's own
@@ -471,6 +534,29 @@ mod tests {
                    \"cache_creation_tokens\":3,\"cache_read_tokens\":400}}\n";
         assert_eq!(tokens_in(out), Some(523));
         assert_eq!(tokens_in("plain text, no json"), None);
+    }
+
+    /// **NO MORE SETUPS AT ONCE THAN ALLOWED.** Six threads through two
+    /// slots never have three inside.
+    #[test]
+    fn slots_bound_how_many_run_at_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let slots = Slots::new(2);
+        let (inside, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        std::thread::scope(|s| {
+            for _ in 0..6 {
+                s.spawn(|| {
+                    let _slot = slots.take();
+                    let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(20));
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        assert_eq!(most.load(Ordering::SeqCst), 2);
+        // Zero is read as one: a gate that never opens would hang the run.
+        drop(Slots::new(0).take());
     }
 
     fn temp_dir(label: &str) -> PathBuf {

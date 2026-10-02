@@ -100,8 +100,17 @@ insi report   [--results <file>]
 
 Every command takes `--work <dir>` (default `.insi-work`): Insi's clones,
 worktrees and the results file (`results.jsonl`, one line per attempt,
-appended). `--jobs N` runs N attempts at once; an attempt spends most of its
-time in setup and test runs, so a few at once save most of the wall clock.
+appended). `--jobs N` runs N attempts at once. `--setup-jobs N` (default 1)
+lets only N of them run setup at once: installing dependencies is bound by
+the disk, and on Watchman three `npm ci` at once took over seventeen minutes
+each against under two alone. Workers and checks still overlap.
+
+Each result records seconds per phase — `prepare`, `queue` (waiting for a
+setup slot), `setup`, `worker`, `check` — so a slow run says where its time
+went. Deleting a finished worktree happens in the background and is in none
+of them. A worker declares the files its harness writes for itself
+(`[worker] own_files`, git glob pathspecs; incode's state, spec documents and
+backups by default), and they are left out of the worker's recorded diff.
 
 Example, a TypeScript project tested with vitest:
 

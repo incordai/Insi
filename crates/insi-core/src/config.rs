@@ -46,6 +46,13 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct Worker {
     pub command: Vec<String>,
+    /// Files the harness writes for itself in the worktree — its state, its
+    /// generated docs, its backups — as git glob pathspecs. They are left out
+    /// of the worker's recorded diff, which is what a lesson is written from:
+    /// a lesson about the harness's bookkeeping teaches nothing about the
+    /// code. The check still runs on the whole worktree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub own_files: Vec<String>,
 }
 
 impl Worker {
@@ -56,6 +63,28 @@ impl Worker {
             command: ["incode", "-t", PROMPT, "--output-format", "stream-json"]
                 .map(String::from)
                 .to_vec(),
+            // incode's state, the spec set its spec step writes
+            // (incode src/spec.rs SPEC_SET), and the backups its edit hook
+            // keeps beside each edited file.
+            own_files: [
+                ".incode/**",
+                ".incord/**",
+                "**/.backups/**",
+                "docs/ARCHITECTURE.md",
+                "docs/CONVENTIONS.md",
+                "docs/VERIFICATION.md",
+                "docs/ASSUMPTIONS.md",
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
+
+    /// A worker given as a bare command, with no files of its own declared.
+    pub fn command(command: Vec<String>) -> Self {
+        Worker {
+            command,
+            own_files: Vec::new(),
         }
     }
 
@@ -116,11 +145,13 @@ mod tests {
             trusted_issue_label = "agent-ok"
             [worker]
             command = ["my-agent", "--task", "{prompt}"]
+            own_files = [".my-agent/**"]
             "#,
         )
         .expect("valid");
         assert_eq!(config.test_cmd, ["cargo", "test"]);
         assert_eq!(config.worker().command[0], "my-agent");
+        assert_eq!(config.worker().own_files, [".my-agent/**"]);
 
         let why = Config::parse("tset_cmd = [\"x\"]").expect_err("misspelt");
         assert!(why.contains("tset_cmd"), "{why}");
@@ -139,14 +170,12 @@ mod tests {
         let argv = Worker::incode().render("fix the bug").expect("renders");
         assert!(argv.contains(&"fix the bug".to_string()), "{argv:?}");
 
-        let blind = Worker {
-            command: vec!["agent".into(), "--go".into()],
-        };
+        let blind = Worker::command(vec!["agent".into(), "--go".into()]);
         assert!(blind
             .render("x")
             .expect_err("no prompt")
             .contains("{prompt}"));
-        let empty = Worker { command: vec![] };
+        let empty = Worker::command(vec![]);
         assert!(empty.render("x").is_err());
     }
 }

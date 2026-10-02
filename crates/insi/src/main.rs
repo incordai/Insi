@@ -44,6 +44,8 @@ const USAGE: &str = "usage:
 
 Tasks come from a repository's history and are only read from it; every
 worktree lives in Insi's own clone under --work (default .insi-work).
+--jobs N runs N attempts at once; --setup-jobs N (default 1) lets only N of
+them install dependencies at once, which is bound by the disk.
 Lessons default to <work>/lessons.jsonl. A lesson is briefed only to tasks
 dated after the one it was learned from; --half older|newer splits the tasks
 by date, to learn on one half and measure on the other.";
@@ -116,7 +118,10 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err(USAGE.to_string());
     };
     let flags = Flags::parse(rest)?;
-    let work = Work::new(PathBuf::from(flags.get("work").unwrap_or(".insi-work")));
+    let work = Work::with_setup_jobs(
+        PathBuf::from(flags.get("work").unwrap_or(".insi-work")),
+        flags.number("setup-jobs", 1)? as usize,
+    );
     let results = flags
         .get("results")
         .map(PathBuf::from)
@@ -235,9 +240,7 @@ fn half(mut tasks: Vec<Task>, which: &str) -> Result<Vec<Task>, String> {
 
 fn worker(flags: &Flags) -> Result<Worker, String> {
     let worker = match flags.get("worker") {
-        Some(_) => Worker {
-            command: flags.argv("worker"),
-        },
+        Some(_) => Worker::command(flags.argv("worker")),
         None => Config::load(&std::env::current_dir().map_err(|e| e.to_string())?)?.worker(),
     };
     worker.render("probe")?;
