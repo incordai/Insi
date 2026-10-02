@@ -80,6 +80,8 @@ pub fn append_result(file: &Path, result: &EvalResult) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
     let line = serde_json::to_string(result).map_err(|e| e.to_string())?;
+    // One whole line per writer, even with another insi run appending.
+    let _held = insi_core::lock::lock_beside(file)?;
     let mut out = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

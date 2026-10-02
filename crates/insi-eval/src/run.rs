@@ -42,6 +42,14 @@ impl Kind {
     }
 }
 
+/// Held while git's bookkeeping on a clone runs. Without the file lock (it
+/// could not be opened) git still refuses a second writer by itself, and the
+/// command reports it; the thread lock is always held.
+struct GitLock<'a> {
+    _process: Result<insi_core::lock::FileLock, String>,
+    _thread: std::sync::MutexGuard<'a, ()>,
+}
+
 /// Insi's work folder: its clones, worktrees and results.
 ///
 /// Attempts may run on several threads at once. Their worktrees are their
@@ -61,10 +69,16 @@ impl Work {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+    /// This process's threads, then other `insi` processes sharing the work
+    /// folder (a validation and an eval at once): both must queue.
+    fn lock(&self) -> GitLock<'_> {
         // A thread that panicked while holding it left no git state the next
         // command cannot meet; the lock only orders commands.
-        self.git_lock.lock().unwrap_or_else(|e| e.into_inner())
+        let thread = self.git_lock.lock().unwrap_or_else(|e| e.into_inner());
+        GitLock {
+            _process: insi_core::lock::lock_beside(&self.root.join("git")),
+            _thread: thread,
+        }
     }
 
     /// Insi's clone of `source`, made on first use and fetched after.

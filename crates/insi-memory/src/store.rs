@@ -19,6 +19,8 @@ pub struct FileLessons {
 
 impl LessonStore for FileLessons {
     fn add(&self, lesson: &Lesson) -> Result<(), String> {
+        // The check and the append are one step, across processes too.
+        let _held = insi_core::lock::lock_beside(&self.path)?;
         if self.all()?.iter().any(|l| l.id == lesson.id) {
             return Ok(());
         }

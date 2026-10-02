@@ -4,10 +4,12 @@
 //!
 //! Nothing here touches the network, git or a process: it is the part every
 //! other crate (and, later, any project that adds Insi as a library) agrees
-//! on.
+//! on. The one piece of filesystem machinery, [`lock`], is here because every
+//! crate that writes a shared file needs the same one.
 
 pub mod config;
 pub mod lesson;
+pub mod lock;
 pub mod signature;
 pub mod task;
 

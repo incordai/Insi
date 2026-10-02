@@ -5,7 +5,9 @@ members = ["crates/insi-core", "crates/insi-eval", "crates/insi-memory", "crates
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
+# 1.89: std's File::lock, which keeps two insi runs sharing a work folder
+# out of each other's way.
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/incordai/insi"
 
