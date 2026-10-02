@@ -121,12 +121,26 @@ fn run(args: &[String]) -> Result<(), String> {
         .get("results")
         .map(PathBuf::from)
         .unwrap_or_else(|| work.root.join("results.jsonl"));
-    match command.as_str() {
-        "mine" => mine_cmd(&flags),
-        "validate" => validate_cmd(&flags, &work, &results),
-        "eval" => eval_cmd(&flags, &work, &results),
-        "learn" => learn_cmd(&flags, &work, &results),
-        "report" => report_cmd(&results),
+    let outcome = command_by_name(command, &flags, &work, &results);
+    if work.root.join("trash").exists() {
+        eprintln!("insi: removing finished worktrees …");
+    }
+    work.wait_for_cleanup();
+    outcome
+}
+
+fn command_by_name(
+    command: &str,
+    flags: &Flags,
+    work: &Work,
+    results: &Path,
+) -> Result<(), String> {
+    match command {
+        "mine" => mine_cmd(flags),
+        "validate" => validate_cmd(flags, work, results),
+        "eval" => eval_cmd(flags, work, results),
+        "learn" => learn_cmd(flags, work, results),
+        "report" => report_cmd(results),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())

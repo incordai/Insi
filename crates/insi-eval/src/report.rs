@@ -111,6 +111,7 @@ mod tests {
             tags: tags.iter().map(|t| t.to_string()).collect(),
             artifacts: None,
             briefed: vec![],
+            phases: Default::default(),
         }
     }
 

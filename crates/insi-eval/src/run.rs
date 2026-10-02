@@ -59,13 +59,54 @@ struct GitLock<'a> {
 pub struct Work {
     pub root: PathBuf,
     git_lock: std::sync::Mutex<()>,
+    /// Background deletions of finished worktrees.
+    reapers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl Work {
     pub fn new(root: PathBuf) -> Work {
-        Work {
+        let work = Work {
             root,
             git_lock: std::sync::Mutex::new(()),
+            reapers: std::sync::Mutex::new(Vec::new()),
+        };
+        // What an earlier run left in the trash (it exited mid-delete).
+        if let Ok(entries) = std::fs::read_dir(work.trash()) {
+            for entry in entries.flatten() {
+                work.reap(entry.path());
+            }
+        }
+        work
+    }
+
+    fn trash(&self) -> PathBuf {
+        self.root.join("trash")
+    }
+
+    /// Delete `dir` on a thread of its own. A worktree with installed
+    /// dependencies takes minutes to delete on Windows, and that time is
+    /// neither part of the attempt nor a reason to hold its slot.
+    fn reap(&self, dir: PathBuf) {
+        let handle = std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+        self.reapers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(handle);
+    }
+
+    /// Wait for every background deletion, so a finished command leaves no
+    /// half-deleted tree behind.
+    pub fn wait_for_cleanup(&self) {
+        let handles: Vec<_> = self
+            .reapers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
+        for handle in handles {
+            let _ = handle.join();
         }
     }
 
@@ -136,8 +177,32 @@ impl Work {
         Ok(path)
     }
 
+    /// Take a worktree away: moved into the trash at once (a rename on the
+    /// same volume), unregistered from the clone, and deleted in the
+    /// background. A tree that cannot be moved is deleted here and now.
     fn drop_worktree(&self, clone: &Path, path: &Path) {
-        if path.exists() && std::fs::remove_dir_all(path).is_err() {
+        if !path.exists() {
+            let _held = self.lock();
+            let _ = git(clone, &["worktree", "prune"]);
+            return;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let binned = self.trash().join(format!("{name}-{nanos}"));
+        let moved =
+            std::fs::create_dir_all(self.trash()).is_ok() && std::fs::rename(path, &binned).is_ok();
+        if moved {
+            {
+                let _held = self.lock();
+                let _ = git(clone, &["worktree", "prune"]);
+            }
+            self.reap(binned);
+            return;
+        }
+        if std::fs::remove_dir_all(path).is_err() {
             // What the filesystem would not delete, git may (it knows the
             // tree); that one waits for the lock.
             let _held = self.lock();
@@ -184,22 +249,36 @@ pub fn attempt(work: &Work, store: &Store, a: &Attempt) -> EvalResult {
         tags: a.tags.clone(),
         artifacts: None,
         briefed: a.briefed.clone(),
+        phases: Default::default(),
     };
-    if let Err(why) = attempt_into(work, store, a, &mut result) {
+    if let Err(why) = attempt_into(work, store, a, started, &mut result) {
         result.error = Some(why);
     }
-    result.wall_secs = started.elapsed().as_secs_f64();
+    // An attempt that failed before its check never set its time.
+    if result.wall_secs == 0.0 {
+        result.wall_secs = started.elapsed().as_secs_f64();
+    }
     result
+}
+
+/// Time one phase of an attempt into its result.
+fn timed<T>(result: &mut EvalResult, phase: &str, f: impl FnOnce() -> T) -> T {
+    let started = std::time::Instant::now();
+    let out = f();
+    result
+        .phases
+        .insert(phase.to_string(), started.elapsed().as_secs_f64());
+    out
 }
 
 fn attempt_into(
     work: &Work,
     store: &Store,
     a: &Attempt,
+    started: std::time::Instant,
     result: &mut EvalResult,
 ) -> Result<(), String> {
     let task = a.task;
-    let clone = work.clone_of(&task.source)?;
     let commit = match a.kind {
         Kind::Reference => &task.reference,
         Kind::Worker | Kind::Base => &task.base,
@@ -208,8 +287,14 @@ fn attempt_into(
     let artifacts = work.root.join("attempts").join(&name);
     std::fs::create_dir_all(&artifacts).map_err(|e| format!("{}: {e}", artifacts.display()))?;
     result.artifacts = Some(artifacts.display().to_string());
-    let tree = work.worktree(&clone, commit, &name)?;
+    let (clone, tree) = timed(result, "prepare", || {
+        let clone = work.clone_of(&task.source)?;
+        let tree = work.worktree(&clone, commit, &name)?;
+        Ok::<_, String>((clone, tree))
+    })?;
     let outcome = run_in(&tree, &artifacts, store, a, result);
+    // The attempt is over; taking its worktree away is not part of it.
+    result.wall_secs = started.elapsed().as_secs_f64();
     if !a.keep {
         work.drop_worktree(&clone, &tree);
     }
@@ -270,7 +355,9 @@ fn run_in(
 ) -> Result<(), String> {
     let task = a.task;
     if !task.setup.is_empty() {
-        let setup = process::run(&task.setup, tree, Duration::from_secs(SETUP_SECS))?;
+        let setup = timed(result, "setup", || {
+            process::run(&task.setup, tree, Duration::from_secs(SETUP_SECS))
+        })?;
         if !setup.success() {
             return Err(format!(
                 "setup failed ({}): {}",
@@ -290,7 +377,9 @@ fn run_in(
             format!("{}\n\n{}", a.preface, task.prompt)
         };
         let argv = a.worker.render(&prompt)?;
-        let ran = process::run(&argv, tree, Duration::from_secs(task.budget.wall_secs))?;
+        let ran = timed(result, "worker", || {
+            process::run(&argv, tree, Duration::from_secs(task.budget.wall_secs))
+        })?;
         result.timed_out = ran.timed_out;
         result.tokens = tokens_in(&ran.stdout);
         keep(artifacts, WORKER_OUTPUT, &ran.tail())?;
@@ -313,7 +402,9 @@ fn run_in(
         }
         std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
     }
-    let check = process::run(&task.check_argv(), tree, Duration::from_secs(CHECK_SECS))?;
+    let check = timed(result, "check", || {
+        process::run(&task.check_argv(), tree, Duration::from_secs(CHECK_SECS))
+    })?;
     keep(artifacts, CHECK_OUTPUT, &check.tail())?;
     result.passed = check.success();
     if !result.passed {
@@ -491,11 +582,25 @@ mod tests {
         for r in [&at_base, &at_reference] {
             let dir = PathBuf::from(r.artifacts.as_deref().expect("artifacts"));
             assert!(dir.join(CHECK_OUTPUT).is_file(), "{}", dir.display());
+            // Each phase that ran says how long it took; there was no setup.
+            assert!(
+                r.phases.contains_key("prepare") && r.phases.contains_key("check"),
+                "{:?}",
+                r.phases
+            );
+            assert!(!r.phases.contains_key("setup"));
         }
-        let runs: Vec<_> = std::fs::read_dir(work.root.join("runs"))
-            .map(|d| d.flatten().collect())
-            .unwrap_or_default();
-        assert!(runs.is_empty(), "worktrees left behind: {runs:?}");
+        let entries = |dir: &str| -> Vec<std::fs::DirEntry> {
+            std::fs::read_dir(work.root.join(dir))
+                .map(|d| d.flatten().collect())
+                .unwrap_or_default()
+        };
+        assert!(entries("runs").is_empty(), "worktrees left behind");
+        work.wait_for_cleanup();
+        assert!(
+            entries("trash").is_empty(),
+            "the background delete did not finish"
+        );
         let clone = work.clone_of(&task.source).expect("clone");
         let listed = git(&clone, &["worktree", "list"]).expect("list");
         assert_eq!(listed.lines().count(), 1, "{listed}");

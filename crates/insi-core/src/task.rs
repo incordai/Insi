@@ -136,6 +136,11 @@ pub struct EvalResult {
     /// The lessons the worker was briefed with, by id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub briefed: Vec<String>,
+    /// Seconds per phase — `prepare` (clone and worktree), `setup`, `worker`,
+    /// `check` — so a slow attempt says where its time went. Cleanup is in
+    /// none of them, and not in `wall_secs`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub phases: std::collections::BTreeMap<String, f64>,
 }
 
 impl EvalResult {
