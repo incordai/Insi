@@ -163,6 +163,25 @@ rewritten; init prints that command instead. Anywhere else, register it like
 any stdio MCP server, e.g.
 `{"command": "insi", "args": ["mcp", "--lessons", "/path/to/lessons.jsonl"]}`.
 
+## Lessons when they apply: `insi hook`
+
+The briefing comes once, before a task. `insi hook` is a Claude Code hook
+that brings a lesson back at the step it is about:
+
+| Event | When | What comes back |
+|---|---|---|
+| `PreToolUse` (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) | before a file is changed | lessons that name that file, by its path in the repository or its file name |
+| `PostToolUseFailure` (`Bash`) | after a command fails | lessons whose failure signature matches the output, as `insi_lessons_for_error` |
+
+A failed command raises `PostToolUseFailure`, not `PostToolUse` (measured on
+Claude Code 2.1.288). The answer is `additionalContext`, so the hook never
+blocks, allows or changes a call; at most two lessons at a time, and each one
+once per session (the ids shown are kept in `.insi-work/hook-shown/`).
+Anything it cannot read is no answer and exit 0, with the reason on stderr.
+
+`insi init` writes it into a missing `.claude/settings.json`; an existing one
+is left alone and init prints the block to merge in.
+
 ## Commands
 
 ```text

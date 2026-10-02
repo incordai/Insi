@@ -12,6 +12,7 @@
 //!               [--results <file>] [--jobs N]
 //! insi report   [--results <file>]
 //! insi mcp      [--lessons <file>]
+//! insi hook     [--lessons <file>]   (a Claude Code PreToolUse/PostToolUse hook)
 //! insi issue    --number N [--repo <dir>] [--worker "<cmd {prompt}>"] [--lessons <file>] [--ready]
 //! ```
 //!
@@ -23,6 +24,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod hook;
 mod init;
 mod issue;
 mod learn;
@@ -49,6 +51,7 @@ const USAGE: &str = "usage:
                 [--results <file>] [--jobs N]
   insi report   [--results <file>]
   insi mcp      [--lessons <file>]      (MCP on stdio: insi_briefing, insi_lessons_for_error)
+  insi hook     [--lessons <file>]      (Claude Code hook: lessons before an edit, after a failure)
   insi issue    --number N [--repo <dir>] [--worker \"<cmd {prompt}>\"] [--lessons <file>] [--ready]
                 (work a GitHub issue labelled trusted_issue_label; a draft PR if test_cmd passes)
 
@@ -163,6 +166,10 @@ fn command_by_name(
             let lessons = lessons_file(flags, work);
             mcp::serve(&|| lessons.all())
         }
+        "hook" => {
+            hook_cmd(flags, work);
+            Ok(())
+        }
         "report" => report_cmd(results),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
@@ -173,6 +180,41 @@ fn command_by_name(
             Ok(())
         }
         other => Err(format!("no command \"{other}\"\n\n{USAGE}")),
+    }
+}
+
+/// One Claude Code hook event from stdin; the answer, if any, on stdout.
+/// Never an error: a hook that fails must not stop the agent, so anything
+/// unreadable is no answer, and why goes to stderr (which Claude Code shows
+/// only in its verbose view when the hook exits 0).
+fn hook_cmd(flags: &Flags, work: &Work) {
+    use std::io::Read;
+    let mut input = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("insi hook: could not read the event: {e}");
+        return;
+    }
+    let event = match serde_json::from_str::<serde_json::Value>(&input) {
+        Ok(event) => event,
+        Err(e) => {
+            eprintln!("insi hook: the event is not JSON: {e}");
+            return;
+        }
+    };
+    let repo = event["cwd"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let topic = repo
+        .as_deref()
+        .and_then(|r| Config::load(r).ok())
+        .and_then(|c| c.topic)
+        .unwrap_or_else(|| "task".to_string());
+    let lessons = lessons_file(flags, work);
+    match hook::respond(&event, &|| lessons.all(), &topic, &work.root) {
+        Ok(Some(answer)) => println!("{answer}"),
+        Ok(None) => {}
+        Err(why) => eprintln!("insi hook: {why} ({})", lessons.path.display()),
     }
 }
 
@@ -231,19 +273,33 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
         println!("added {} to .gitignore", init::WORK_IGNORE);
     }
     match done.mcp {
-        init::McpRegistration::Written => {
+        init::Registration::Written => {
             println!(
                 "wrote {}: agents here can ask `insi mcp` for lessons",
                 init::MCP_FILE
             )
         }
-        init::McpRegistration::AlreadyThere => {
+        init::Registration::AlreadyThere => {
             println!("{} already registers insi", init::MCP_FILE)
         }
-        init::McpRegistration::LeftAlone => println!(
+        init::Registration::LeftAlone => println!(
             "{} exists and was not changed; to register Insi in it:\n  {}",
             init::MCP_FILE,
             init::MCP_ADD
+        ),
+    }
+    match done.hooks {
+        init::Registration::Written => println!(
+            "wrote {}: `insi hook` shows lessons before an edit and after a failed command",
+            init::SETTINGS_FILE
+        ),
+        init::Registration::AlreadyThere => {
+            println!("{} already runs insi hook", init::SETTINGS_FILE)
+        }
+        init::Registration::LeftAlone => println!(
+            "{} exists and was not changed; to have Insi's lessons shown, merge in:\n{}",
+            init::SETTINGS_FILE,
+            serde_json::to_string_pretty(&init::hooks_file()).unwrap_or_default()
         ),
     }
     println!(
