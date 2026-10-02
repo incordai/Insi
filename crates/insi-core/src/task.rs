@@ -21,6 +21,10 @@ pub struct Task {
     /// The commit that solved it in history — the reference answer, used to
     /// prove the task is solvable and never shown to a worker.
     pub reference: String,
+    /// When the reference was committed (RFC 3339). Orders tasks in time, so
+    /// that a lesson is only ever briefed to work that came after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
     /// What the worker is asked to do.
     pub prompt: String,
     /// Repo-relative paths of the hidden test files.
@@ -125,6 +129,24 @@ pub struct EvalResult {
     /// Labels for the run's conditions, e.g. `lessons=off`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The folder holding what the attempt left behind: the worker's diff,
+    /// its output, the check's output. What a lesson is written from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<String>,
+    /// The lessons the worker was briefed with, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub briefed: Vec<String>,
+}
+
+impl EvalResult {
+    /// The condition an attempt ran under: its tags, joined.
+    pub fn condition(&self) -> String {
+        if self.tags.is_empty() {
+            "untagged".to_string()
+        } else {
+            self.tags.join(",")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -137,6 +159,7 @@ mod tests {
             source: "repo".into(),
             base: "abc".into(),
             reference: "def".into(),
+            date: Some("2026-10-02T09:15:00+00:00".into()),
             prompt: "fix it".into(),
             hidden_tests: vec!["src/a.test.ts".into(), "src/b.test.ts".into()],
             check: vec!["npx".into(), "vitest".into(), "run".into(), TESTS.into()],

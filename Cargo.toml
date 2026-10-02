@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/insi-core", "crates/insi-eval", "crates/insi"]
+members = ["crates/insi-core", "crates/insi-eval", "crates/insi-memory", "crates/insi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,3 +18,4 @@ serde_json = "1"
 toml = "1.1"
 insi-core = { path = "crates/insi-core" }
 insi-eval = { path = "crates/insi-eval" }
+insi-memory = { path = "crates/insi-memory" }

@@ -137,6 +137,8 @@ pub struct Attempt<'a> {
     /// Text put in front of the task's prompt (a briefing of lessons), or
     /// empty.
     pub preface: &'a str,
+    /// The lessons in that preface, by id, recorded with the result.
+    pub briefed: Vec<String>,
     pub tags: Vec<String>,
     /// Leave the worktree on disk afterwards, to look at what happened.
     pub keep: bool,
@@ -157,6 +159,8 @@ pub fn attempt(work: &Work, store: &Store, a: &Attempt) -> EvalResult {
         signature: None,
         error: None,
         tags: a.tags.clone(),
+        artifacts: None,
+        briefed: a.briefed.clone(),
     };
     if let Err(why) = attempt_into(work, store, a, &mut result) {
         result.error = Some(why);
@@ -177,16 +181,70 @@ fn attempt_into(
         Kind::Reference => &task.reference,
         Kind::Worker | Kind::Base => &task.base,
     };
-    let name = format!("{}-{}-s{}", task.id, a.kind.name(), a.seed);
+    let name = attempt_name(a);
+    let artifacts = work.root.join("attempts").join(&name);
+    std::fs::create_dir_all(&artifacts).map_err(|e| format!("{}: {e}", artifacts.display()))?;
+    result.artifacts = Some(artifacts.display().to_string());
     let tree = work.worktree(&clone, commit, &name)?;
-    let outcome = run_in(&tree, store, a, result);
+    let outcome = run_in(&tree, &artifacts, store, a, result);
     if !a.keep {
         work.drop_worktree(&clone, &tree);
     }
     outcome
 }
 
-fn run_in(tree: &Path, store: &Store, a: &Attempt, result: &mut EvalResult) -> Result<(), String> {
+/// One name per task, kind, seed AND condition: two conditions of the same
+/// task and seed may run at once, and must not share a worktree.
+fn attempt_name(a: &Attempt) -> String {
+    let mut name = format!("{}-{}-s{}", a.task.id, a.kind.name(), a.seed);
+    if !a.tags.is_empty() {
+        let slug: String = a
+            .tags
+            .join("_")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        name.push('-');
+        name.push_str(&slug);
+    }
+    name
+}
+
+/// What an attempt leaves for a lesson to be written from. Files in its
+/// artifacts folder:
+pub const WORKER_DIFF: &str = "worker.diff";
+pub const WORKER_OUTPUT: &str = "worker.out";
+pub const CHECK_OUTPUT: &str = "check.out";
+
+/// The most of any one artifact that is kept: a worker can write a diff of
+/// any size, and what a lesson is written from is read in far less.
+pub const MAX_ARTIFACT: usize = 512 * 1024;
+
+fn keep(dir: &Path, file: &str, text: &str) -> Result<(), String> {
+    let path = dir.join(file);
+    let text = if text.len() > MAX_ARTIFACT {
+        let mut end = MAX_ARTIFACT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!(
+            "{}\n[insi: cut at {MAX_ARTIFACT} of {} bytes]\n",
+            &text[..end],
+            text.len()
+        )
+    } else {
+        text.to_string()
+    };
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn run_in(
+    tree: &Path,
+    artifacts: &Path,
+    store: &Store,
+    a: &Attempt,
+    result: &mut EvalResult,
+) -> Result<(), String> {
     let task = a.task;
     if !task.setup.is_empty() {
         let setup = process::run(&task.setup, tree, Duration::from_secs(SETUP_SECS))?;
@@ -212,6 +270,15 @@ fn run_in(tree: &Path, store: &Store, a: &Attempt, result: &mut EvalResult) -> R
         let ran = process::run(&argv, tree, Duration::from_secs(task.budget.wall_secs))?;
         result.timed_out = ran.timed_out;
         result.tokens = tokens_in(&ran.stdout);
+        keep(artifacts, WORKER_OUTPUT, &ran.tail())?;
+        // What the worker changed, new files included, before the hidden
+        // tests are copied over it. The worktree's index is its own.
+        git(tree, &["add", "--all"])?;
+        keep(
+            artifacts,
+            WORKER_DIFF,
+            &git(tree, &["diff", "--cached", "--no-color"])?,
+        )?;
     }
     // The hidden tests, only now: whatever the worker wrote at these paths
     // is replaced by the real check.
@@ -224,6 +291,7 @@ fn run_in(tree: &Path, store: &Store, a: &Attempt, result: &mut EvalResult) -> R
         std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
     }
     let check = process::run(&task.check_argv(), tree, Duration::from_secs(CHECK_SECS))?;
+    keep(artifacts, CHECK_OUTPUT, &check.tail())?;
     result.passed = check.success();
     if !result.passed {
         // The whole kept output: a runner prints the failure's details above
@@ -231,6 +299,24 @@ fn run_in(tree: &Path, store: &Store, a: &Attempt, result: &mut EvalResult) -> R
         result.signature = Some(normalize(&check.tail()));
     }
     Ok(())
+}
+
+/// The verified fix: what the reference commit changed, read from Insi's own
+/// clone, without the hidden test files (they judge the task; the lesson is
+/// about the code).
+pub fn fix_diff(work: &Work, task: &Task) -> Result<String, String> {
+    let clone = work.clone_of(&task.source)?;
+    let range = format!("{}..{}", task.base, task.reference);
+    let mut args = vec![
+        "diff".to_string(),
+        "--no-color".to_string(),
+        range,
+        "--".to_string(),
+        ".".to_string(),
+    ];
+    args.extend(task.hidden_tests.iter().map(|t| format!(":(exclude){t}")));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    git(&clone, &args)
 }
 
 /// The total tokens a worker reported: incode's `stream-json` ends with a

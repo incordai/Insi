@@ -38,11 +38,7 @@ pub fn by_condition(results: &[EvalResult]) -> BTreeMap<String, Totals> {
     let mut out: BTreeMap<String, Totals> = BTreeMap::new();
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for r in results.iter().filter(|r| r.kind == "worker") {
-        let condition = if r.tags.is_empty() {
-            "untagged".to_string()
-        } else {
-            r.tags.join(",")
-        };
+        let condition = r.condition();
         let t = out.entry(condition.clone()).or_default();
         t.attempts += 1;
         t.tokens += r.tokens.unwrap_or(0);
@@ -113,6 +109,8 @@ mod tests {
             signature: sig.map(String::from),
             error: None,
             tags: tags.iter().map(|t| t.to_string()).collect(),
+            artifacts: None,
+            briefed: vec![],
         }
     }
 

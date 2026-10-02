@@ -3,9 +3,12 @@
 //! ```text
 //! insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
 //!               [--setup "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
-//! insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>] [--jobs N]
+//! insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
 //! insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
-//!               [--fair-only] [--only id,id] [--results <file>] [--keep] [--jobs N]
+//!               [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
+//!               [--results <file>] [--keep] [--jobs N]
+//! insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"]
+//!               [--results <file>] [--jobs N]
 //! insi report   [--results <file>]
 //! ```
 //!
@@ -17,23 +20,36 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use insi_core::{Config, Worker};
+mod learn;
+
+use insi_core::{Config, Task, Worker};
 use insi_eval::mine::{self, Options};
 use insi_eval::pool;
 use insi_eval::report;
 use insi_eval::run::{self, Attempt, Kind, Work};
 use insi_eval::store::{self, Store};
+use insi_memory::briefing;
+use insi_memory::store::{FileLessons, LessonStore};
 
 const USAGE: &str = "usage:
   insi mine     --source <repo> --tasks <dir> --private <dir> --check \"<cmd {tests}>\"
                 [--setup \"<cmd>\"] [--prefix <name>] [--limit N] [--wall-secs N]
-  insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>] [--jobs N]
+  insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
   insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker \"<cmd {prompt}>\"]
-                [--fair-only] [--only id,id] [--results <file>] [--keep] [--jobs N]
+                [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
+                [--results <file>] [--keep] [--jobs N]
+  insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"]
+                [--results <file>] [--jobs N]
   insi report   [--results <file>]
 
 Tasks come from a repository's history and are only read from it; every
-worktree lives in Insi's own clone under --work (default .insi-work).";
+worktree lives in Insi's own clone under --work (default .insi-work).
+Lessons default to <work>/lessons.jsonl. A lesson is briefed only to tasks
+dated after the one it was learned from; --half older|newer splits the tasks
+by date, to learn on one half and measure on the other.";
+
+/// The most of a prompt a briefing may take.
+const BRIEFING_CHARS: usize = 4_000;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -109,6 +125,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "mine" => mine_cmd(&flags),
         "validate" => validate_cmd(&flags, &work, &results),
         "eval" => eval_cmd(&flags, &work, &results),
+        "learn" => learn_cmd(&flags, &work, &results),
         "report" => report_cmd(&results),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
@@ -162,17 +179,87 @@ fn mine_cmd(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
-fn selected(flags: &Flags, store: &Store) -> Result<Vec<insi_core::Task>, String> {
+fn selected(flags: &Flags, store: &Store) -> Result<Vec<Task>, String> {
     let only = flags.list("only");
-    let tasks: Vec<_> = store
+    let mut tasks: Vec<_> = store
         .load()?
         .into_iter()
         .filter(|t| only.is_empty() || only.contains(&t.id))
         .collect();
+    if let Some(which) = flags.get("half") {
+        tasks = half(tasks, which)?;
+    }
     if tasks.is_empty() {
         return Err("no tasks selected".to_string());
     }
     Ok(tasks)
+}
+
+/// The older or newer half of `tasks` by commit date; the older half gets
+/// the odd one. Lessons learned on the older half are measured on the newer,
+/// which none of them came from.
+fn half(mut tasks: Vec<Task>, which: &str) -> Result<Vec<Task>, String> {
+    let mut dated = Vec::with_capacity(tasks.len());
+    for t in tasks.drain(..) {
+        let at = t
+            .date
+            .as_deref()
+            .and_then(insi_core::lesson::epoch_secs)
+            .ok_or_else(|| format!("task {} has no date; mine it again", t.id))?;
+        dated.push((at, t));
+    }
+    dated.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    let older = dated.len().div_ceil(2);
+    let newer = dated.split_off(older);
+    let pick = match which {
+        "older" => dated,
+        "newer" => newer,
+        other => return Err(format!("--half is older or newer, not \"{other}\"")),
+    };
+    Ok(pick.into_iter().map(|(_, t)| t).collect())
+}
+
+fn worker(flags: &Flags) -> Result<Worker, String> {
+    let worker = match flags.get("worker") {
+        Some(_) => Worker {
+            command: flags.argv("worker"),
+        },
+        None => Config::load(&std::env::current_dir().map_err(|e| e.to_string())?)?.worker(),
+    };
+    worker.render("probe")?;
+    Ok(worker)
+}
+
+fn lessons_file(flags: &Flags, work: &Work) -> FileLessons {
+    FileLessons {
+        path: flags
+            .get("lessons")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| work.root.join("lessons.jsonl")),
+    }
+}
+
+/// A task's topic: its id without the commit part (`watchman-1a2b3c4d` →
+/// `watchman`), i.e. the repository it was mined from.
+fn topic(task: &Task) -> String {
+    task.id
+        .rsplit_once('-')
+        .map_or(task.id.as_str(), |(prefix, _)| prefix)
+        .to_string()
+}
+
+fn learn_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
+    let store = store(flags)?;
+    let tasks = store.load()?;
+    learn::learn(&learn::Learn {
+        work,
+        tasks: &tasks,
+        results,
+        lessons: &lessons_file(flags, work),
+        worker: &worker(flags)?,
+        topic: &topic,
+        jobs: jobs(flags)?,
+    })
 }
 
 fn validate_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
@@ -198,6 +285,7 @@ fn validate_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String
                     seed: 0,
                     worker: &worker,
                     preface: "",
+                    briefed: vec![],
                     tags: vec![],
                     keep: flags.has("keep"),
                 },
@@ -230,15 +318,21 @@ fn validate_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String
 
 fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
     let store = store(flags)?;
-    let worker = match flags.get("worker") {
-        Some(_) => Worker {
-            command: flags.argv("worker"),
-        },
-        None => Config::load(&std::env::current_dir().map_err(|e| e.to_string())?)?.worker(),
-    };
-    worker.render("probe")?;
+    let worker = worker(flags)?;
     let seeds = flags.number("seeds", 1)? as u32;
-    let tags = flags.list("tag");
+    // With --lessons, each task is briefed with what earlier tasks taught.
+    let lessons = if flags.has("lessons") {
+        lessons_file(flags, work).all()?
+    } else {
+        Vec::new()
+    };
+    let mut tags = flags.list("tag");
+    // Every attempt says whether it was briefed, so the two conditions are
+    // never mixed up in a report.
+    if !tags.iter().any(|t| t.starts_with("lessons=")) {
+        let on = if flags.has("lessons") { "on" } else { "off" };
+        tags.insert(0, format!("lessons={on}"));
+    }
     let mut tasks = selected(flags, &store)?;
     if flags.has("fair-only") {
         let fair = report::fair_tasks(&store::read_results(results).unwrap_or_default());
@@ -254,6 +348,13 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
         &runs,
         jobs(flags)?,
         |(seed, task)| {
+            let brief = briefing::build(
+                &lessons,
+                &topic(task),
+                &task.id,
+                task.date.as_deref(),
+                BRIEFING_CHARS,
+            );
             run::attempt(
                 work,
                 &store,
@@ -262,7 +363,8 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
                     kind: Kind::Worker,
                     seed: *seed,
                     worker: &worker,
-                    preface: "",
+                    preface: &brief.text,
+                    briefed: brief.lesson_ids,
                     tags: tags.clone(),
                     keep: flags.has("keep"),
                 },
@@ -325,4 +427,54 @@ fn jobs(flags: &Flags) -> Result<usize, String> {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use insi_core::Budget;
+
+    fn task(id: &str, date: Option<&str>) -> Task {
+        Task {
+            id: id.into(),
+            source: "repo".into(),
+            base: "a".into(),
+            reference: "b".into(),
+            date: date.map(String::from),
+            prompt: "p".into(),
+            hidden_tests: vec!["t.test.ts".into()],
+            check: vec!["x".into()],
+            setup: vec![],
+            budget: Budget {
+                wall_secs: 1,
+                tokens: None,
+            },
+        }
+    }
+
+    /// **LEARN ON THE PAST, MEASURE ON THE FUTURE.** The halves split by
+    /// instant (not by text: offsets differ), cover every task once, and an
+    /// undated task is refused rather than guessed.
+    #[test]
+    fn tasks_split_into_an_older_and_a_newer_half() {
+        let tasks = vec![
+            task("app-c", Some("2026-03-01T00:00:00Z")),
+            task("app-a", Some("2026-01-01T09:00:00+05:30")),
+            task("app-b", Some("2026-01-01T05:00:00Z")),
+            task("app-d", Some("2026-04-01T00:00:00Z")),
+            task("app-e", Some("2026-05-01T00:00:00Z")),
+        ];
+        let ids = |v: Vec<Task>| v.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(half(tasks.clone(), "older").unwrap()),
+            ["app-a", "app-b", "app-c"]
+        );
+        assert_eq!(
+            ids(half(tasks.clone(), "newer").unwrap()),
+            ["app-d", "app-e"]
+        );
+        assert!(half(tasks, "middle").is_err());
+        assert!(half(vec![task("app-x", None)], "older").is_err());
+        assert_eq!(topic(&task("watchman-1a2b3c4d", None)), "watchman");
+    }
 }

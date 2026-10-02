@@ -91,7 +91,11 @@ fn is_source(path: &str, markers: &[String]) -> bool {
 pub fn mine(source: &Path, opts: &Options) -> Result<Vec<Mined>, String> {
     let log = git(
         source,
-        &["log", "--no-merges", "--format=%H%x1f%P%x1f%s%x1f%b%x1e"],
+        &[
+            "log",
+            "--no-merges",
+            "--format=%H%x1f%P%x1f%cI%x1f%s%x1f%b%x1e",
+        ],
     )?;
     let mut out = Vec::new();
     for record in log.split('\x1e') {
@@ -99,7 +103,7 @@ pub fn mine(source: &Path, opts: &Options) -> Result<Vec<Mined>, String> {
             break;
         }
         let fields: Vec<&str> = record.trim_start_matches('\n').split('\x1f').collect();
-        let [sha, parents, subject, body] = fields[..] else {
+        let [sha, parents, date, subject, body] = fields[..] else {
             continue;
         };
         let parents: Vec<&str> = parents.split_whitespace().collect();
@@ -158,6 +162,7 @@ pub fn mine(source: &Path, opts: &Options) -> Result<Vec<Mined>, String> {
                 source: source.display().to_string(),
                 base: parents[0].to_string(),
                 reference: sha.to_string(),
+                date: Some(date.trim().to_string()).filter(|d| !d.is_empty()),
                 prompt,
                 hidden_tests: tests,
                 check: opts.check.clone(),
@@ -286,6 +291,11 @@ mod tests {
         assert_eq!(task.base, base);
         assert_eq!(task.reference, fix);
         assert_eq!(task.prompt, "fix: sum adds\n\nIt subtracted.");
+        assert!(
+            task.date.as_deref().is_some_and(|d| d.starts_with("20")),
+            "{:?}",
+            task.date
+        );
         assert_eq!(task.hidden_tests, ["src/sum.test.ts"]);
         assert_eq!(mined[0].hidden[0].1, b"expect(sum(1, 2)).toBe(3);\n");
         assert!(task.validate().is_ok());

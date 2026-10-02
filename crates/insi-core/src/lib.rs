@@ -7,9 +7,11 @@
 //! on.
 
 pub mod config;
+pub mod lesson;
 pub mod signature;
 pub mod task;
 
 pub use config::{Config, Worker};
+pub use lesson::{Lesson, Verification};
 pub use signature::normalize;
 pub use task::{Budget, EvalResult, Task};

@@ -47,14 +47,54 @@ and the check runs. A failure's output is reduced to a signature (paths,
 hashes and numbers normalised), so the same mistake made twice is counted as
 a repeat.
 
+## Lessons
+
+Each worker attempt keeps what it left behind under `<work>/attempts/<name>/`:
+the worker's diff, its output, the check's output.
+
+`insi learn` takes every failed attempt on a fair task — whose fix is
+therefore verified: the reference commit passed the check — and asks the
+worker for one lesson from the attempt, the failure and the fix: an issue, a
+root cause, an action to **use** and one to **avoid**. A lesson is refused if
+a field is empty, longer than a few sentences, or holds a code block. Lessons
+are kept in `<work>/lessons.jsonl` (or `--lessons <file>`), one per attempt.
+
+`insi eval --lessons <file>` puts a briefing in front of each task's prompt:
+the lessons of the same repository, newest first, within 4,000 characters,
+and **only lessons learned from tasks dated before this one** — compared as
+instants, so commit dates in different time zones order correctly. A lesson
+can never be briefed to the task it came from, or to anything earlier.
+
+Every worker attempt is tagged `lessons=on` or `lessons=off`, and records
+which lessons it was briefed with.
+
+The measurement, end to end:
+
+```sh
+insi validate ... --jobs 2                                 # which tasks are fair
+insi eval  ... --fair-only --half older --tag phase=learn  # attempts to learn from
+insi learn ...                                              # lessons from their failures
+insi eval  ... --fair-only --half newer --seeds 3          # lessons=off
+insi eval  ... --fair-only --half newer --seeds 3 --lessons <work>/lessons.jsonl
+insi report
+```
+
+`--half older|newer` splits the selected tasks by commit date, so lessons are
+learned on one half and measured on the other. The report groups attempts by
+their tags, so the learning run carries a tag of its own and is never
+counted with the measured `lessons=off` runs.
+
 ## Commands
 
 ```text
 insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
               [--setup "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
-insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>] [--jobs N]
+insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
 insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
-              [--fair-only] [--only id,id] [--results <file>] [--keep] [--jobs N]
+              [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
+              [--results <file>] [--keep] [--jobs N]
+insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"]
+              [--results <file>] [--jobs N]
 insi report   [--results <file>]
 ```
 
@@ -102,6 +142,7 @@ not counted in tokens.
 |---|---|
 | `insi-core` | config, the task format, failure signatures |
 | `insi-eval` | running commands with deadlines, mining, the store, attempts, reports |
+| `insi-memory` | lessons: the writer's prompt and parsing, the store, the briefing |
 | `insi` | the command line |
 
 ## Building
