@@ -101,9 +101,10 @@ insi report   [--results <file>]
 Every command takes `--work <dir>` (default `.insi-work`): Insi's clones,
 worktrees and the results file (`results.jsonl`, one line per attempt,
 appended). `--jobs N` runs N attempts at once. `--setup-jobs N` (default 1)
-lets only N of them run setup at once: installing dependencies is bound by
-the disk, and on Watchman three `npm ci` at once took over seventeen minutes
-each against under two alone. Workers and checks still overlap.
+lets only N pieces of bulk disk work run at once — a setup, or deleting a
+finished worktree. Both are bound by the disk: on Watchman, whole attempts
+run one after another took 145–205s, while with three installs at once a
+single setup took about 1,060s. Workers and checks still overlap.
 
 Each result records seconds per phase — `prepare`, `queue` (waiting for a
 setup slot), `setup`, `worker`, `check` — so a slow run says where its time

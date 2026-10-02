@@ -59,12 +59,21 @@ struct GitLock<'a> {
 pub struct Work {
     pub root: PathBuf,
     git_lock: std::sync::Mutex<()>,
-    /// Background deletions of finished worktrees.
-    reapers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
-    /// Setups that may run at once. Installing dependencies is bound by the
-    /// disk, not the CPU: measured on Watchman, one `npm ci` alone took
-    /// under two minutes and three at once took over seventeen each.
-    setup_slots: Slots,
+    /// Bulk disk work that may run at once: setups (installing
+    /// dependencies) and deleting finished worktrees. Both are bound by the
+    /// disk, not the CPU. Measured on Watchman: whole attempts run one after
+    /// another (`npm ci` and vitest) took 145–205s; with three installs at
+    /// once a setup alone took about 1,060s, and with five deletions running
+    /// beside it, 676s.
+    disk: std::sync::Arc<Slots>,
+    /// One background thread deleting finished worktrees, one at a time,
+    /// each holding a disk slot.
+    reaper: std::sync::Mutex<Option<Reaper>>,
+}
+
+struct Reaper {
+    queue: std::sync::mpsc::Sender<PathBuf>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 /// A counting semaphore.
@@ -105,13 +114,14 @@ impl Work {
         Work::with_setup_jobs(root, 1)
     }
 
-    /// A work folder where up to `setup_jobs` setups run at once.
+    /// A work folder where up to `setup_jobs` pieces of bulk disk work (a
+    /// setup, or deleting a finished worktree) run at once.
     pub fn with_setup_jobs(root: PathBuf, setup_jobs: usize) -> Work {
         let work = Work {
             root,
             git_lock: std::sync::Mutex::new(()),
-            reapers: std::sync::Mutex::new(Vec::new()),
-            setup_slots: Slots::new(setup_jobs),
+            disk: std::sync::Arc::new(Slots::new(setup_jobs)),
+            reaper: std::sync::Mutex::new(None),
         };
         // What an earlier run left in the trash (it exited mid-delete).
         if let Ok(entries) = std::fs::read_dir(work.trash()) {
@@ -126,30 +136,35 @@ impl Work {
         self.root.join("trash")
     }
 
-    /// Delete `dir` on a thread of its own. A worktree with installed
-    /// dependencies takes minutes to delete on Windows, and that time is
-    /// neither part of the attempt nor a reason to hold its slot.
+    /// Queue `dir` for deletion in the background. A worktree with installed
+    /// dependencies takes minutes to delete on Windows; that time is not
+    /// part of the attempt, and the deletions run one at a time, each taking
+    /// a disk slot, so they never pile onto an install.
     fn reap(&self, dir: PathBuf) {
-        let handle = std::thread::spawn(move || {
-            let _ = std::fs::remove_dir_all(&dir);
+        let mut reaper = self.reaper.lock().unwrap_or_else(|e| e.into_inner());
+        let reaper = reaper.get_or_insert_with(|| {
+            let (queue, dirs) = std::sync::mpsc::channel::<PathBuf>();
+            let disk = std::sync::Arc::clone(&self.disk);
+            let thread = std::thread::spawn(move || {
+                for dir in dirs {
+                    let _slot = disk.take();
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
+            });
+            Reaper { queue, thread }
         });
-        self.reapers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(handle);
+        // The thread only ends once its queue is dropped, so a send cannot
+        // fail while it is held here.
+        let _ = reaper.queue.send(dir);
     }
 
-    /// Wait for every background deletion, so a finished command leaves no
+    /// Wait for every queued deletion, so a finished command leaves no
     /// half-deleted tree behind.
     pub fn wait_for_cleanup(&self) {
-        let handles: Vec<_> = self
-            .reapers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain(..)
-            .collect();
-        for handle in handles {
-            let _ = handle.join();
+        let reaper = self.reaper.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(Reaper { queue, thread }) = reaper {
+            drop(queue);
+            let _ = thread.join();
         }
     }
 
@@ -400,7 +415,7 @@ fn run_in(
     let task = a.task;
     if !task.setup.is_empty() {
         // Waiting for a slot is its own phase, so it is never read as setup.
-        let slot = timed(result, "queue", || work.setup_slots.take());
+        let slot = timed(result, "queue", || work.disk.take());
         let setup = timed(result, "setup", || {
             process::run(&task.setup, tree, Duration::from_secs(SETUP_SECS))
         })?;
