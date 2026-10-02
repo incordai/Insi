@@ -230,6 +230,22 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
     if done.gitignore_changed {
         println!("added {} to .gitignore", init::WORK_IGNORE);
     }
+    match done.mcp {
+        init::McpRegistration::Written => {
+            println!(
+                "wrote {}: agents here can ask `insi mcp` for lessons",
+                init::MCP_FILE
+            )
+        }
+        init::McpRegistration::AlreadyThere => {
+            println!("{} already registers insi", init::MCP_FILE)
+        }
+        init::McpRegistration::LeftAlone => println!(
+            "{} exists and was not changed; to register Insi in it:\n  {}",
+            init::MCP_FILE,
+            init::MCP_ADD
+        ),
+    }
     println!(
         "\nnext, from this folder:\n  insi mine\n  insi validate --jobs 2\n  insi eval --fair-only"
     );

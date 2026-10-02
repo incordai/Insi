@@ -13,7 +13,7 @@ same benchmark: `lessons=off` against `lessons=on`.
 
 ```sh
 cd your-repo
-insi init       # writes .insi/config.toml, ignores .insi-work/
+insi init       # writes .insi/config.toml, ignores .insi-work/, registers insi mcp
 insi mine       # tasks from the history, hidden tests outside the checkout
 insi validate   # which tasks are fair
 insi eval --fair-only
@@ -156,7 +156,11 @@ lesson or runs anything.
 | `insi_briefing {topic, before?, max_chars?}` | the briefing for a repository: verified lessons, newest first, as actions |
 | `insi_lessons_for_error {error, topic?}` | lessons whose failure looked like this one: the error is normalized (paths, numbers, colour codes gone) and matched line by line |
 
-Register it like any stdio MCP server, e.g.
+`insi init` registers it for the repository: a missing `.mcp.json` is written
+with the entry `claude mcp add --scope project insi -- insi mcp` would add,
+which reads `.insi-work/lessons.jsonl`. An existing `.mcp.json` is never
+rewritten; init prints that command instead. Anywhere else, register it like
+any stdio MCP server, e.g.
 `{"command": "insi", "args": ["mcp", "--lessons", "/path/to/lessons.jsonl"]}`.
 
 ## Commands

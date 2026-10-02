@@ -1,8 +1,9 @@
 //! `insi init`: make a repository ready for Insi.
 //!
 //! Looks at the files at the repository's root to tell how it is installed
-//! and tested, writes `.insi/config.toml` with what it found, and keeps
-//! Insi's work folder out of git. Every value it writes can be changed in the
+//! and tested, writes `.insi/config.toml` with what it found, keeps Insi's
+//! work folder out of git, and registers `insi mcp` in `.mcp.json` so an
+//! agent working in the repository can ask for lessons. Every value it writes can be changed in the
 //! file; nothing it detects is used without being written down first, so the
 //! next command reads the same settings a person can see.
 
@@ -91,6 +92,56 @@ pub struct Initialised {
     pub config_path: std::path::PathBuf,
     pub gitignore_changed: bool,
     pub config: Config,
+    pub mcp: McpRegistration,
+}
+
+/// The project MCP file Claude Code reads at a repository's root.
+pub const MCP_FILE: &str = ".mcp.json";
+
+/// The line that registers `insi mcp` by hand, in Claude Code's own words.
+pub const MCP_ADD: &str = "claude mcp add --scope project insi -- insi mcp";
+
+/// What `init` did about registering `insi mcp` for agents in the repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpRegistration {
+    /// [`MCP_FILE`] was written with `insi` as its only server.
+    Written,
+    /// [`MCP_FILE`] already registers a server named `insi`.
+    AlreadyThere,
+    /// [`MCP_FILE`] exists without `insi`, and is a person's file: it is not
+    /// rewritten. Register with [`MCP_ADD`].
+    LeftAlone,
+}
+
+/// Register `insi mcp` in `repo`'s [`MCP_FILE`], in the shape `claude mcp
+/// add --scope project` writes. Only a missing file is written; an existing
+/// one is read and never changed.
+fn register_mcp(repo: &Path) -> Result<McpRegistration, String> {
+    let path = repo.join(MCP_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let has_insi = serde_json::from_str::<serde_json::Value>(&text)
+                .map(|v| v["mcpServers"].get("insi").is_some())
+                .unwrap_or(false);
+            Ok(if has_insi {
+                McpRegistration::AlreadyThere
+            } else {
+                McpRegistration::LeftAlone
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let file = serde_json::json!({
+                "mcpServers": {
+                    "insi": { "type": "stdio", "command": "insi", "args": ["mcp"], "env": {} }
+                }
+            });
+            let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+            std::fs::write(&path, format!("{text}\n"))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(McpRegistration::Written)
+        }
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 /// The repository's name: its folder's.
@@ -155,11 +206,13 @@ pub fn init(
     )
     .map_err(|e| format!("{}: {e}", config_path.display()))?;
     let gitignore_changed = ignore_work_folder(repo)?;
+    let mcp = register_mcp(repo)?;
     Ok(Initialised {
         detected,
         config_path,
         gitignore_changed,
         config,
+        mcp,
     })
 }
 
@@ -286,5 +339,37 @@ mod tests {
         assert!(init(&unknown, vec![], None, false)
             .expect_err("no stack")
             .contains("--check"));
+    }
+
+    /// **`insi mcp` IS REGISTERED, AND A PERSON'S `.mcp.json` IS NOT
+    /// REWRITTEN.** A repo with none gets the file `claude mcp add --scope
+    /// project` writes; one that already names `insi` is left as it is; one
+    /// with other servers only is left byte for byte, and init says how to
+    /// add Insi to it.
+    #[test]
+    fn insi_mcp_is_registered_without_touching_an_existing_file() {
+        let fresh = repo_with(&[("Cargo.toml", "")]);
+        let done = init(&fresh, vec![], None, false).expect("init");
+        assert_eq!(done.mcp, McpRegistration::Written);
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fresh.join(MCP_FILE)).expect("file"))
+                .expect("json");
+        assert_eq!(
+            written,
+            serde_json::json!({"mcpServers": {"insi": {
+                "type": "stdio", "command": "insi", "args": ["mcp"], "env": {}
+            }}})
+        );
+        let again = init(&fresh, vec![], None, true).expect("forced");
+        assert_eq!(again.mcp, McpRegistration::AlreadyThere);
+
+        let theirs = r#"{"mcpServers":{"memory":{"command":"mem"}}}"#;
+        let other = repo_with(&[("Cargo.toml", ""), (MCP_FILE, theirs)]);
+        let done = init(&other, vec![], None, false).expect("init");
+        assert_eq!(done.mcp, McpRegistration::LeftAlone);
+        assert_eq!(
+            std::fs::read_to_string(other.join(MCP_FILE)).expect("file"),
+            theirs
+        );
     }
 }
