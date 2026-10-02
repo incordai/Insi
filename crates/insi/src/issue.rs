@@ -12,7 +12,8 @@
 //! # What has to be true before anything is pushed
 //!
 //! The repository's own check (`test_cmd`) passes in the branch's worktree,
-//! and nothing the branch adds is shaped like a credential. A branch that
+//! and nothing the branch adds is shaped like a credential or personal data
+//! (`insi_core::secrets`). A branch that
 //! fails either is kept on this machine — committed, so the work is not lost
 //! — and nothing leaves. A pull request is opened as a DRAFT: a person reads
 //! it and decides; Insi never merges.
@@ -343,7 +344,8 @@ fn work_in(
         return Ok(Outcome::Kept {
             branch: branch.to_string(),
             why: format!(
-                "the branch adds what looks like a credential, so nothing was pushed: {}",
+                "the branch adds what looks like a credential or personal data, so nothing \
+                 was pushed: {}",
                 listed.join("; ")
             ),
         });
@@ -360,7 +362,8 @@ fn work_in(
          - **Check:** `{check}` passed in this branch's worktree.\n\
          - **Worker:** `{worker}`, {secs}s{tokens}.\n\
          - **Lessons briefed:** {lessons}.\n\
-         - **Credential scan:** nothing credential-shaped in the lines this branch adds.\n",
+         - **Credential and personal-data scan:** nothing credential- or PII-shaped in the \
+         lines this branch adds.\n",
         n = issue.number,
         label = cfg.trusted_issue_label.as_deref().unwrap_or_default(),
         check = cfg.test_cmd.join(" "),

@@ -1,9 +1,15 @@
-//! Credential shapes in what is about to be pushed.
+//! Credential and personal-data shapes in what is about to be pushed.
 //!
 //! Before Insi pushes a branch or opens a pull request, the lines the branch
-//! adds are checked for things shaped like credentials, and the files it adds
-//! whose names make them credentials. A finding names the file and line and
-//! what it looked like — never the value.
+//! adds are checked for things shaped like credentials or personal data, and
+//! the files it adds whose names make them credentials. A finding names the
+//! file and line and what it looked like — never the value.
+//!
+//! Personal data ([`pii_in`]) is held to the same precision: a card number
+//! must pass the Luhn check and be written like one, a US social security
+//! number must be in a range that is issued, and an email address must not
+//! be a reserved or placeholder one (`example.com`, `.test`, `.invalid`,
+//! `noreply`), which is what fixtures and docs use.
 //!
 //! The same high-precision shapes as incode's `/pr` scan (a prefixed key, a
 //! cloud key id, a JWT, a private-key block, a bearer token), matched by hand:
@@ -106,6 +112,145 @@ pub fn shape_in(line: &str) -> Option<&'static str> {
     None
 }
 
+/// What personal data `line` holds the shape of, if any.
+pub fn pii_in(line: &str) -> Option<&'static str> {
+    if card_number(line) {
+        return Some("a payment card number");
+    }
+    if us_ssn(line) {
+        return Some("a US social security number");
+    }
+    if personal_email(line) {
+        return Some("an email address");
+    }
+    None
+}
+
+/// Whether `digits` passes the Luhn check card numbers carry.
+fn luhn(digits: &[u32]) -> bool {
+    let sum: u32 = digits
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, &d)| {
+            if i % 2 == 1 {
+                let doubled = d * 2;
+                if doubled > 9 {
+                    doubled - 9
+                } else {
+                    doubled
+                }
+            } else {
+                d
+            }
+        })
+        .sum();
+    sum.is_multiple_of(10)
+}
+
+/// A run of digits, spaces and dashes in `line` that is written like a card
+/// number: four groups of four, or a bare 15–16 digits starting the way
+/// issuers' numbers start (4, 51–55, 2221–2720, 34, 37, 6011, 65) — and in
+/// both cases passing Luhn. Timestamps and ids are bare digits without a
+/// card prefix or fail the check.
+fn card_number(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() || (i > 0 && bytes[i - 1].is_ascii_alphanumeric()) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len()
+            && (bytes[i].is_ascii_digit()
+                || ((bytes[i] == b' ' || bytes[i] == b'-')
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1].is_ascii_digit()))
+        {
+            i += 1;
+        }
+        if i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+            continue;
+        }
+        let run = &line[start..i];
+        let groups: Vec<&str> = run.split([' ', '-']).collect();
+        let digits: Vec<u32> = run.chars().filter_map(|c| c.to_digit(10)).collect();
+        let grouped = groups.len() == 4 && groups.iter().all(|g| g.len() == 4);
+        let bare = groups.len() == 1 && (15..=16).contains(&digits.len()) && {
+            let prefix = |n: usize| run[..n].parse::<u32>().unwrap_or(0);
+            run.starts_with('4')
+                || (51..=55).contains(&prefix(2))
+                || (2221..=2720).contains(&prefix(4))
+                || [34, 37, 65].contains(&prefix(2))
+                || prefix(4) == 6011
+        };
+        let same = digits.windows(2).all(|w| w[0] == w[1]);
+        if (grouped || bare) && !same && luhn(&digits) {
+            return true;
+        }
+    }
+    false
+}
+
+/// `ddd-dd-dddd` as a word of its own, in a range the US issues: not area
+/// 000, 666 or 900–999, not group 00, not serial 0000.
+fn us_ssn(line: &str) -> bool {
+    let b = line.as_bytes();
+    (0..b.len().saturating_sub(10)).any(|i| {
+        let shape = (0..11).all(|k| match k {
+            3 | 6 => b[i + k] == b'-',
+            _ => b[i + k].is_ascii_digit(),
+        });
+        let alone = (i == 0 || (!b[i - 1].is_ascii_alphanumeric() && b[i - 1] != b'-'))
+            && b.get(i + 11)
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'-');
+        if !shape || !alone {
+            return false;
+        }
+        let area: u32 = line[i..i + 3].parse().unwrap_or(0);
+        let group = &line[i + 4..i + 6];
+        let serial = &line[i + 7..i + 11];
+        area != 0 && area != 666 && area < 900 && group != "00" && serial != "0000"
+    })
+}
+
+/// An email address whose domain is a real one: not a reserved or
+/// placeholder domain, not a `noreply` address, not a `git@host` remote.
+fn personal_email(line: &str) -> bool {
+    let local_char = |c: char| c.is_ascii_alphanumeric() || "._%+-".contains(c);
+    let domain_char = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-';
+    line.match_indices('@').any(|(at, _)| {
+        let local: String = line[..at]
+            .chars()
+            .rev()
+            .take_while(|c| local_char(*c))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let domain: String = line[at + 1..]
+            .chars()
+            .take_while(|c| domain_char(*c))
+            .collect();
+        let domain = domain.trim_end_matches(['.', '-']).to_ascii_lowercase();
+        let local = local.trim_start_matches('.').to_ascii_lowercase();
+        let Some((_, tld)) = domain.rsplit_once('.') else {
+            return false;
+        };
+        if local.is_empty() || tld.len() < 2 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+            return false;
+        }
+        let reserved = ["example.com", "example.org", "example.net", "localhost"]
+            .iter()
+            .any(|d| domain == *d || domain.ends_with(&format!(".{d}")))
+            || ["example", "invalid", "test", "localhost", "local"].contains(&tld)
+            || domain.ends_with("users.noreply.github.com");
+        let placeholder = local == "git" || local.contains("noreply") || local.contains("no-reply");
+        !reserved && !placeholder
+    })
+}
+
 /// What a file is, when its name alone makes it a credential.
 pub fn credential_file(path: &str) -> Option<&'static str> {
     let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
@@ -125,8 +270,9 @@ pub fn credential_file(path: &str) -> Option<&'static str> {
     None
 }
 
-/// Every credential in what a unified diff ADDS. Removed lines are not
-/// looked at: deleting a secret is the fix, not the leak.
+/// Every credential and piece of personal data in what a unified diff
+/// ADDS. Removed lines are not looked at: deleting a secret is the fix, not
+/// the leak.
 pub fn scan_diff(diff: &str) -> Vec<Finding> {
     let mut found = Vec::new();
     let mut file = String::new();
@@ -152,7 +298,7 @@ pub fn scan_diff(diff: &str) -> Vec<Finding> {
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(0);
         } else if let Some(added) = line.strip_prefix('+') {
-            if let Some(what) = shape_in(added) {
+            if let Some(what) = shape_in(added).or_else(|| pii_in(added)) {
                 found.push(Finding {
                     file: file.clone(),
                     line: new_line,
@@ -222,6 +368,47 @@ mod tests {
             "Bearer token is read from the keychain",
         ] {
             assert_eq!(shape_in(line), None, "{line}");
+        }
+    }
+
+    /// **PERSONAL DATA IS FOUND, AND WHAT LOOKS LIKE IT IS NOT.** Card
+    /// numbers written like card numbers that pass Luhn, issued-range SSNs,
+    /// real-domain emails — and not epoch milliseconds, version strings,
+    /// placeholder emails, git remotes or dates.
+    #[test]
+    fn personal_data_is_found_and_lookalikes_are_not() {
+        // Standard test card numbers: Luhn-valid, never issued to anyone.
+        let visa = ["4111", "1111", "1111", "1111"];
+        for (line, what) in [
+            (format!("card: {}", visa.join(" ")), "a payment card number"),
+            (format!("card={}", visa.join("-")), "a payment card number"),
+            (format!("pan {}", visa.concat()), "a payment card number"),
+            (
+                format!("ssn: {}-{}-{}", "123", "45", "6789"),
+                "a US social security number",
+            ),
+            (
+                format!("contact {}@{}", "jane.doe", "gmail.com"),
+                "an email address",
+            ),
+        ] {
+            assert_eq!(pii_in(&line), Some(what), "{line}");
+        }
+        for line in [
+            "const now = 1696212345678;",
+            "id = 4111111111111112",
+            "let n = 1234 5678 9012 3456;",
+            "version 1.2.3-4567-89",
+            "date 2026-10-02",
+            "ssn: 000-12-3456",
+            "author: Jo <jo@example.com>",
+            "Co-Authored-By: bot <noreply@anthropic.com>",
+            "url = git@github.com:o/r.git",
+            "npm i @scope/pkg@1.2.3",
+            "send to admin@service.test",
+            "1234567890123456",
+        ] {
+            assert_eq!(pii_in(line), None, "{line}");
         }
     }
 
