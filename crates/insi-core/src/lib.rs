@@ -10,6 +10,7 @@
 pub mod config;
 pub mod lesson;
 pub mod lock;
+pub mod secrets;
 pub mod signature;
 pub mod task;
 

@@ -8,9 +8,11 @@
 //! insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
 //!               [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
 //!               [--results <file>] [--keep] [--jobs N]
-//! insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"]
+//! insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"] [--to-memory]
 //!               [--results <file>] [--jobs N]
 //! insi report   [--results <file>]
+//! insi mcp      [--lessons <file>]
+//! insi issue    --number N [--repo <dir>] [--worker "<cmd {prompt}>"] [--lessons <file>] [--ready]
 //! ```
 //!
 //! Commands are written as one string and split on spaces; an argument with
@@ -22,7 +24,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod init;
+mod issue;
 mod learn;
+mod mcp;
 
 use insi_core::{Config, Task, Worker};
 use insi_eval::mine::{self, Options};
@@ -41,9 +45,12 @@ const USAGE: &str = "usage:
   insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker \"<cmd {prompt}>\"]
                 [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
                 [--results <file>] [--keep] [--jobs N]
-  insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"]
+  insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"] [--to-memory]
                 [--results <file>] [--jobs N]
   insi report   [--results <file>]
+  insi mcp      [--lessons <file>]      (MCP on stdio: insi_briefing, insi_lessons_for_error)
+  insi issue    --number N [--repo <dir>] [--worker \"<cmd {prompt}>\"] [--lessons <file>] [--ready]
+                (work a GitHub issue labelled trusted_issue_label; a draft PR if test_cmd passes)
 
 In a repository with .insi/config.toml (write one with `insi init`), the
 check, setup, prefix and budget come from it, and --tasks/--private default
@@ -146,10 +153,16 @@ fn command_by_name(
 ) -> Result<(), String> {
     match command {
         "init" => init_cmd(flags),
+        "issue" => issue_cmd(flags, work),
         "mine" => mine_cmd(flags),
         "validate" => validate_cmd(flags, work, results),
         "eval" => eval_cmd(flags, work, results),
         "learn" => learn_cmd(flags, work, results),
+        "mcp" => {
+            // stdout is the protocol from here on: nothing else may print.
+            let lessons = lessons_file(flags, work);
+            mcp::serve(&|| lessons.all())
+        }
         "report" => report_cmd(results),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
@@ -221,6 +234,67 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
         "\nnext, from this folder:\n  insi mine\n  insi validate --jobs 2\n  insi eval --fair-only"
     );
     Ok(())
+}
+
+fn issue_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
+    let repo = std::path::absolute(flags.get("repo").unwrap_or("."))
+        .map_err(|e| format!("--repo: {e}"))?;
+    let config = Config::load(&repo)?;
+    let number = match flags.number("number", 0)? {
+        0 => return Err(format!("--number <issue> is required\n\n{USAGE}")),
+        n => n,
+    };
+    let worker = match flags.get("worker") {
+        Some(_) => Worker::command(flags.argv("worker")),
+        None => config.worker(),
+    };
+    worker.render("probe")?;
+    // Lessons of this repository, when asked for: everything learned so far.
+    let briefing = if flags.has("lessons") {
+        let topic = config
+            .topic
+            .clone()
+            .unwrap_or_else(|| repo_folder_name(&repo));
+        briefing::build(
+            &lessons_file(flags, work).all()?,
+            &topic,
+            "",
+            Some("9999-12-31T23:59:59Z"),
+            BRIEFING_CHARS,
+        )
+        .text
+    } else {
+        String::new()
+    };
+    let outcome = issue::work_issue(
+        &issue::Run {
+            repo: &repo,
+            number,
+            config: &config,
+            worker: &worker,
+            work_root: &work.root,
+            briefing: &briefing,
+            draft: !flags.has("ready"),
+        },
+        &issue::GhCli,
+    )?;
+    match outcome {
+        issue::Outcome::Opened { url, branch } => {
+            println!(
+                "opened {url}\n  from {branch} — a draft unless --ready; review it before merging"
+            )
+        }
+        issue::Outcome::Kept { branch, why } => {
+            println!("kept on {branch}, nothing pushed: {why}")
+        }
+    }
+    Ok(())
+}
+
+fn repo_folder_name(repo: &Path) -> String {
+    repo.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string())
 }
 
 fn mine_cmd(flags: &Flags) -> Result<(), String> {
@@ -352,6 +426,11 @@ fn learn_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
         worker: &worker(flags)?,
         topic: &topic,
         jobs: jobs(flags)?,
+        to_memory: if flags.has("to-memory") {
+            Some(insi_memory::incord::address()?)
+        } else {
+            None
+        },
     })
 }
 

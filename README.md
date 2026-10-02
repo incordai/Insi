@@ -86,6 +86,13 @@ root cause, an action to **use** and one to **avoid**. A lesson is refused if
 a field is empty, longer than a few sentences, or holds a code block. Lessons
 are kept in `<work>/lessons.jsonl` (or `--lessons <file>`), one per attempt.
 
+With `--to-memory`, each lesson is also written to the local Incord Memory
+engine (`INCORD_MEMORY_ADDR`, default `127.0.0.1:9180`; nothing off this
+machine) as an `issue` item filed under the repository it came from, tagged
+`insi` and `verified:check`, so every agent on the machine is briefed with it.
+Leave it off for a benchmark: an experiment's lessons belong in its own file,
+where they can be reset.
+
 `insi eval --lessons <file>` puts a briefing in front of each task's prompt:
 the lessons of the same repository, newest first, within 4,000 characters,
 and **only lessons learned from tasks dated before this one** — compared as
@@ -111,6 +118,47 @@ learned on one half and measured on the other. The report groups attempts by
 their tags, so the learning run carries a tag of its own and is never
 counted with the measured `lessons=off` runs.
 
+## An issue, worked into a draft pull request: `insi issue`
+
+```sh
+insi issue --number 42            # from the repository's folder
+```
+
+- **Only a labelled issue is worked.** It must be open and carry the label
+  named by `trusted_issue_label` in `.insi/config.toml`. Anyone can write an
+  issue; only a maintainer can label one, so the label is the decision that
+  an agent may take it. An unlabelled issue is refused before its text is
+  given to anything.
+- **Its own branch.** `insi/issue-<n>`, from the default branch on `origin`,
+  in a worktree under the work folder. A branch that already exists is
+  refused: the issue was worked before, and that branch is a person's to read
+  first.
+- **Nothing leaves without the check.** The worker's change is committed, then
+  the repository's own `test_cmd` runs. A failing check keeps the commit on
+  the local branch and pushes nothing. So does anything credential-shaped in
+  the lines the branch adds (a prefixed key, a cloud key id, a JWT, a
+  private-key block, a bearer token, or a file such as `.env` or `id_rsa`).
+- **A draft, with its evidence.** `Closes #<n>`, the check that passed, the
+  worker, its time and tokens, whether lessons were briefed. `--ready` opens
+  it ready for review instead. Insi never merges.
+
+GitHub is reached through the `gh` CLI, which holds the login: Insi reads,
+holds and sends no token.
+
+## Lessons for any agent: `insi mcp`
+
+`insi mcp` serves the lessons over MCP on stdin/stdout, so an agent Insi did
+not start can use them too. It only reads: nothing an agent sends writes a
+lesson or runs anything.
+
+| Tool | What it answers |
+|---|---|
+| `insi_briefing {topic, before?, max_chars?}` | the briefing for a repository: verified lessons, newest first, as actions |
+| `insi_lessons_for_error {error, topic?}` | lessons whose failure looked like this one: the error is normalized (paths, numbers, colour codes gone) and matched line by line |
+
+Register it like any stdio MCP server, e.g.
+`{"command": "insi", "args": ["mcp", "--lessons", "/path/to/lessons.jsonl"]}`.
+
 ## Commands
 
 ```text
@@ -120,7 +168,7 @@ insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] 
 insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
               [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
               [--results <file>] [--keep] [--jobs N]
-insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"]
+insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"] [--to-memory]
               [--results <file>] [--jobs N]
 insi report   [--results <file>]
 ```

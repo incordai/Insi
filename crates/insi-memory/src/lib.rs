@@ -9,5 +9,6 @@
 //! - [`briefing`] turns stored lessons into the text put in front of a task.
 
 pub mod briefing;
+pub mod incord;
 pub mod store;
 pub mod writer;

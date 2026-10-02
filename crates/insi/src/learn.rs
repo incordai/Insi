@@ -26,6 +26,10 @@ pub struct Learn<'a> {
     pub worker: &'a Worker,
     pub topic: &'a (dyn Fn(&Task) -> String + Sync),
     pub jobs: usize,
+    /// Also write each lesson to the Incord Memory engine at this address,
+    /// filed under the repository it came from. `None` keeps lessons in the
+    /// file only, as a benchmark must.
+    pub to_memory: Option<std::net::SocketAddr>,
 }
 
 /// The attempts a lesson can be learned from: failed, judged, on a fair
@@ -67,6 +71,7 @@ pub fn learn(l: &Learn) -> Result<(), String> {
         return Ok(());
     }
     let mut written = 0usize;
+    let mut published = 0usize;
     pool::each(
         &todo,
         l.jobs,
@@ -74,9 +79,17 @@ pub fn learn(l: &Learn) -> Result<(), String> {
         |(task, r), outcome| {
             match outcome {
                 Ok(lesson) => {
+                    // The file first: it is the record, and a memory engine
+                    // that is down must not cost the lesson.
                     l.lessons.add(&lesson)?;
                     written += 1;
                     println!("{}  {}", lesson.id, lesson.use_);
+                    if let Some(addr) = l.to_memory {
+                        match insi_memory::incord::publish(addr, &lesson, &task.source) {
+                            Ok(()) => published += 1,
+                            Err(why) => println!("{}  not written to memory: {why}", lesson.id),
+                        }
+                    }
                 }
                 Err(why) => println!(
                     "{} s{}  no lesson: {}",
@@ -92,6 +105,9 @@ pub fn learn(l: &Learn) -> Result<(), String> {
         "{written} lesson(s) written to {}",
         l.lessons.path.display()
     );
+    if l.to_memory.is_some() {
+        println!("{published} of them written to Incord Memory");
+    }
     Ok(())
 }
 
