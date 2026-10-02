@@ -1,0 +1,13 @@
+[package]
+name = "insi-eval"
+description = "Insi's benchmark: tasks mined from a repository's history, run in throwaway worktrees and judged by hidden checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+insi-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

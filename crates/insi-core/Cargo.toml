@@ -1,0 +1,12 @@
+[package]
+name = "insi-core"
+description = "Shared types for Insi: tasks, budgets, results, lessons, per-repo config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

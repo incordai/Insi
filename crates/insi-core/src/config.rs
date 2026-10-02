@@ -1,0 +1,152 @@
+//! `.insi/config.toml` — how one repository is checked and worked on.
+//!
+//! Every key is optional except where a command needs it; an unknown key is
+//! an error, so a misspelt setting is never silently left at its default.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+/// The folder Insi keeps in a repository.
+pub const DIR: &str = ".insi";
+/// The config file inside it.
+pub const FILE: &str = "config.toml";
+/// What a worker command must contain: where the task's prompt goes.
+pub const PROMPT: &str = "{prompt}";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    /// The topic lessons for this repo are filed under (`rust/incord/...`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// The public check: the repo's own test command, as argv.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_cmd: Vec<String>,
+    /// Paths a worker must never write (glob patterns, repo-relative).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected: Vec<String>,
+    /// Where the public task definitions live, repo-relative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_tasks: Option<String>,
+    /// Where the hidden checks live: a path outside every checkout, or a git
+    /// URL. Never inside the repository a worker can read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_checks: Option<String>,
+    /// The label a maintainer puts on an issue to let an agent work it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_issue_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<Worker>,
+}
+
+/// The worker adapter: a command run inside the task's worktree, with the
+/// task's prompt in place of `{prompt}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Worker {
+    pub command: Vec<String>,
+}
+
+impl Worker {
+    /// The default adapter: incode, printing its events as JSON lines so the
+    /// run's token use can be read back.
+    pub fn incode() -> Self {
+        Worker {
+            command: ["incode", "-t", PROMPT, "--output-format", "stream-json"]
+                .map(String::from)
+                .to_vec(),
+        }
+    }
+
+    /// The command for one prompt. Refused when the program is missing or no
+    /// argument takes the prompt: a worker that never sees the task would
+    /// still be scored, as a failure the task did not earn.
+    pub fn render(&self, prompt: &str) -> Result<Vec<String>, String> {
+        if self.command.first().is_none_or(|p| p.trim().is_empty()) {
+            return Err("worker.command is empty; name the program to run".to_string());
+        }
+        if !self.command.iter().any(|a| a.contains(PROMPT)) {
+            return Err(format!(
+                "worker.command has no {PROMPT} argument, so the worker would never see the task"
+            ));
+        }
+        Ok(self
+            .command
+            .iter()
+            .map(|a| a.replace(PROMPT, prompt))
+            .collect())
+    }
+}
+
+impl Config {
+    /// Read `<repo>/.insi/config.toml`; a repo without one has the defaults.
+    pub fn load(repo: &Path) -> Result<Config, String> {
+        let path = repo.join(DIR).join(FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Self::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(e) => Err(format!("could not read {}: {e}", path.display())),
+        }
+    }
+
+    pub fn parse(text: &str) -> Result<Config, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+
+    /// The worker this repo names, else incode.
+    pub fn worker(&self) -> Worker {
+        self.worker.clone().unwrap_or_else(Worker::incode)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_config_reads_and_unknown_keys_are_refused() {
+        let config = Config::parse(
+            r#"
+            topic = "incord/memory-service"
+            test_cmd = ["cargo", "test"]
+            protected = [".github/workflows/**", "evals/**"]
+            eval_tasks = "evals/tasks"
+            private_checks = "../insi-private"
+            trusted_issue_label = "agent-ok"
+            [worker]
+            command = ["my-agent", "--task", "{prompt}"]
+            "#,
+        )
+        .expect("valid");
+        assert_eq!(config.test_cmd, ["cargo", "test"]);
+        assert_eq!(config.worker().command[0], "my-agent");
+
+        let why = Config::parse("tset_cmd = [\"x\"]").expect_err("misspelt");
+        assert!(why.contains("tset_cmd"), "{why}");
+    }
+
+    #[test]
+    fn an_absent_config_is_the_defaults_with_incode_as_the_worker() {
+        let dir = std::env::temp_dir().join(format!("insi-config-{}", std::process::id()));
+        let config = Config::load(&dir).expect("absent is fine");
+        assert_eq!(config, Config::default());
+        assert_eq!(config.worker().command[0], "incode");
+    }
+
+    #[test]
+    fn a_worker_must_be_handed_the_prompt() {
+        let argv = Worker::incode().render("fix the bug").expect("renders");
+        assert!(argv.contains(&"fix the bug".to_string()), "{argv:?}");
+
+        let blind = Worker {
+            command: vec!["agent".into(), "--go".into()],
+        };
+        assert!(blind
+            .render("x")
+            .expect_err("no prompt")
+            .contains("{prompt}"));
+        let empty = Worker { command: vec![] };
+        assert!(empty.render("x").is_err());
+    }
+}

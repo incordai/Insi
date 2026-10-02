@@ -1,0 +1,16 @@
+[package]
+name = "insi"
+description = "Insi: self-improving coding agents, governed by humans"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "insi"
+path = "src/main.rs"
+
+[dependencies]
+insi-core.workspace = true
+insi-eval.workspace = true
+serde_json.workspace = true

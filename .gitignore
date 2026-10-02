@@ -1,0 +1,6 @@
+/target
+# Incord Memory's own folder (its gate acknowledgements and state).
+.incord/
+# Where `insi eval` keeps its clone, worktrees and results by default.
+/.insi-work/
+.backups/

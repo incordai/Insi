@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/insi-core", "crates/insi-eval", "crates/insi"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/incordai/insi"
+
+# Three dependencies, all already in incode's lock at these versions (see
+# .incord/RULE_ACK for the vetting). Phase 1 drives git and the worker through
+# std processes: no HTTP client, async runtime or argument parser yet.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+insi-core = { path = "crates/insi-core" }
+insi-eval = { path = "crates/insi-eval" }
