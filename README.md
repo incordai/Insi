@@ -238,11 +238,27 @@ trusted_issue_label = "insi"
 [worker]
 # {prompt} is replaced by the task's prompt. The default is incode.
 command = ["incode", "-t", "{prompt}", "--output-format", "stream-json"]
+
+# US dollars per million tokens, by the model name the worker reports.
+# A model on a subscription is an entry with no keys (all zero).
+[prices."claude-sonnet-5-5"]
+input = 3.0
+output = 15.0
+cache_write = 3.75
+cache_read = 0.3
 ```
 
-Any agent with a non-interactive mode can be the worker. Token counts are read
-from incode's `stream-json` result; another worker's attempts are timed but
-not counted in tokens.
+Any agent with a non-interactive mode can be the worker. The model and token
+counts are read from incode's `stream-json` result; another worker's attempts
+are timed but not counted in tokens.
+
+Each attempt records `cost_usd` from `[prices]`, and `insi report` sums it
+per condition. `insi eval --max-dollars D` starts no new attempt once the
+run has spent D; an attempt already running is bounded by its wall time, so
+the run can end above D by at most the attempts in flight. An attempt whose
+cost is not known — no usage reported, or no price for its model — stops a
+capped run rather than counting as free. (The prices above are an example
+of the format; set the ones you pay.)
 
 ## Layout
 

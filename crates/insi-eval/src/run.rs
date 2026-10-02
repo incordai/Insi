@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use insi_core::{normalize, EvalResult, Task, Worker};
+use insi_core::{normalize, EvalResult, Task, Usage, Worker};
 
 use crate::git::git;
 use crate::process;
@@ -333,6 +333,9 @@ pub fn attempt(work: &Work, store: &Store, a: &Attempt) -> EvalResult {
         timed_out: false,
         wall_secs: 0.0,
         tokens: None,
+        model: None,
+        usage: None,
+        cost_usd: None,
         signature: None,
         error: None,
         tags: a.tags.clone(),
@@ -474,7 +477,11 @@ fn run_in(
             process::run(&argv, tree, Duration::from_secs(task.budget.wall_secs))
         })?;
         result.timed_out = ran.timed_out;
-        result.tokens = tokens_in(&ran.stdout);
+        if let Some((model, usage)) = reported(&ran.stdout) {
+            result.tokens = Some(usage.total());
+            result.model = model;
+            result.usage = Some(usage);
+        }
         keep(artifacts, WORKER_OUTPUT, &ran.tail())?;
         // What the worker changed, new files included, before the hidden
         // tests are copied over it. The worktree's index is its own.
@@ -542,25 +549,30 @@ pub fn fix_diff(work: &Work, task: &Task) -> Result<String, String> {
     git(&clone, &args)
 }
 
-/// The total tokens a worker reported: incode's `stream-json` ends with a
-/// `result` object whose `usage` holds the run's totals.
-pub fn tokens_in(stdout: &str) -> Option<u64> {
+/// The model and tokens a worker reported: incode's `stream-json` ends with
+/// a `result` object holding the model it ran on and the run's `usage` by
+/// kind (incode src/task_run.rs, `finish`).
+pub fn reported(stdout: &str) -> Option<(Option<String>, Usage)> {
     stdout.lines().rev().find_map(|line| {
         let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
         if v["type"] != "result" {
             return None;
         }
-        let usage = &v["usage"];
-        let sum = [
-            "input_tokens",
-            "output_tokens",
-            "cache_creation_tokens",
-            "cache_read_tokens",
-        ]
-        .iter()
-        .filter_map(|k| usage[*k].as_u64())
-        .sum::<u64>();
-        Some(sum)
+        let u = &v["usage"];
+        let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        let model = v["model"]
+            .as_str()
+            .filter(|m| !m.is_empty())
+            .map(String::from);
+        Some((
+            model,
+            Usage {
+                input: n("input_tokens"),
+                output: n("output_tokens"),
+                cache_creation: n("cache_creation_tokens"),
+                cache_read: n("cache_read_tokens"),
+            },
+        ))
     })
 }
 
@@ -576,10 +588,21 @@ mod tests {
     #[test]
     fn tokens_are_read_from_incodes_final_result() {
         let out = "{\"type\":\"init\"}\n{\"type\":\"usage\",\"input_tokens\":5}\n\
-                   {\"type\":\"result\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\
-                   \"cache_creation_tokens\":3,\"cache_read_tokens\":400}}\n";
-        assert_eq!(tokens_in(out), Some(523));
-        assert_eq!(tokens_in("plain text, no json"), None);
+                   {\"type\":\"result\",\"model\":\"m-1\",\"usage\":{\"input_tokens\":100,\
+                   \"output_tokens\":20,\"cache_creation_tokens\":3,\"cache_read_tokens\":400}}\n";
+        let (model, usage) = reported(out).expect("reported");
+        assert_eq!(model.as_deref(), Some("m-1"));
+        assert_eq!(
+            usage,
+            Usage {
+                input: 100,
+                output: 20,
+                cache_creation: 3,
+                cache_read: 400
+            }
+        );
+        assert_eq!(usage.total(), 523);
+        assert_eq!(reported("plain text, no json"), None);
     }
 
     /// **A CLONE'S NAME IS SHORT, READABLE AND ITS OWN.** The repository's

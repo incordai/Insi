@@ -7,7 +7,7 @@
 //! insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
 //! insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
 //!               [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
-//!               [--results <file>] [--keep] [--jobs N]
+//!               [--results <file>] [--keep] [--jobs N] [--max-dollars D]
 //! insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"] [--to-memory]
 //!               [--results <file>] [--jobs N]
 //! insi report   [--results <file>]
@@ -46,7 +46,9 @@ const USAGE: &str = "usage:
   insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
   insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker \"<cmd {prompt}>\"]
                 [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
-                [--results <file>] [--keep] [--jobs N]
+                [--results <file>] [--keep] [--jobs N] [--max-dollars D]
+                (D: stop starting attempts once they cost D US dollars, by
+                [prices] in .insi/config.toml)
   insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"] [--to-memory]
                 [--results <file>] [--jobs N]
   insi report   [--results <file>]
@@ -588,6 +590,19 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
     let runs: Vec<(u32, &insi_core::Task)> = (0..seeds)
         .flat_map(|seed| tasks.iter().map(move |t| (seed, t)))
         .collect();
+    let prices = repo_config()?.1.prices;
+    let mut spend = Spend {
+        cap: match flags.get("max-dollars") {
+            Some(v) => Some(
+                v.parse::<f64>()
+                    .ok()
+                    .filter(|d| *d > 0.0)
+                    .ok_or("--max-dollars must be a positive number")?,
+            ),
+            None => None,
+        },
+        spent: 0.0,
+    };
     pool::each(
         &runs,
         jobs(flags)?,
@@ -614,10 +629,11 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
                 },
             )
         },
-        |(seed, task), r| {
+        |(seed, task), mut r| {
+            r.cost_usd = cost_of(&prices, &r);
             store::append_result(results, &r)?;
             println!(
-                "{} s{seed}  {}  {:.0}s{}{}",
+                "{} s{seed}  {}  {:.0}s{}{}{}",
                 task.id,
                 match (&r.error, r.passed) {
                     (Some(_), _) => "ERROR",
@@ -628,15 +644,72 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
                 r.tokens
                     .map(|t| format!("  {t} tokens"))
                     .unwrap_or_default(),
+                r.cost_usd.map(|c| format!("  ${c:.2}")).unwrap_or_default(),
                 r.error
                     .as_deref()
                     .map(|e| format!("  {}", first_line(e)))
                     .unwrap_or_default()
             );
-            Ok(())
+            // After the result is saved: the attempt that crosses the cap is
+            // kept, and no new one starts.
+            spend.add(&r)
         },
     )?;
     report_cmd(results)
+}
+
+/// What an attempt cost, from the config's price for the model it reported.
+fn cost_of(
+    prices: &std::collections::BTreeMap<String, insi_core::Price>,
+    r: &insi_core::EvalResult,
+) -> Option<f64> {
+    let price = prices.get(r.model.as_deref()?)?;
+    Some(price.cost(r.usage.as_ref()?))
+}
+
+/// A run's spend against `--max-dollars`.
+///
+/// Bounds the ACTION, not the measurement: no attempt starts once the cap is
+/// reached. An attempt already running is bounded by its wall time, so a run
+/// can end above the cap by at most the attempts in flight — and says so.
+/// An attempt whose worker ran but whose cost is not known stops the run
+/// too: counting it as free is how a cap stops meaning anything.
+struct Spend {
+    cap: Option<f64>,
+    spent: f64,
+}
+
+impl Spend {
+    fn add(&mut self, r: &insi_core::EvalResult) -> Result<(), String> {
+        let Some(cap) = self.cap else {
+            return Ok(());
+        };
+        match r.cost_usd {
+            Some(cost) => {
+                self.spent += cost;
+                if self.spent >= cap {
+                    return Err(format!(
+                        "spent ${:.2} of the ${cap:.2} cap (--max-dollars); no new attempt was \
+                         started, and every result so far is saved",
+                        self.spent
+                    ));
+                }
+                Ok(())
+            }
+            None if r.phases.contains_key("worker") => Err(format!(
+                "{}: the cost is not known ({}), so --max-dollars cannot be kept; stopping \
+                 with ${:.2} counted",
+                r.task,
+                match (&r.model, &r.usage) {
+                    (_, None) => "the worker reported no usage".to_string(),
+                    (None, Some(_)) => "the worker reported no model".to_string(),
+                    (Some(m), Some(_)) => format!("no price for \"{m}\" in .insi/config.toml"),
+                },
+                self.spent
+            )),
+            None => Ok(()),
+        }
+    }
 }
 
 fn report_cmd(results: &Path) -> Result<(), String> {
@@ -647,7 +720,7 @@ fn report_cmd(results: &Path) -> Result<(), String> {
     }
     for (condition, t) in &by {
         println!(
-            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s",
+            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s, ${:.2}{}",
             t.passed,
             t.attempts - t.errors,
             t.pass_rate() * 100.0,
@@ -655,7 +728,13 @@ fn report_cmd(results: &Path) -> Result<(), String> {
             t.timed_out,
             t.errors,
             t.tokens,
-            t.wall_secs
+            t.wall_secs,
+            t.cost_usd,
+            if t.uncosted > 0 {
+                format!(" (+{} attempt(s) of unknown cost)", t.uncosted)
+            } else {
+                String::new()
+            }
         );
     }
     Ok(())
@@ -676,7 +755,7 @@ fn first_line(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use insi_core::Budget;
+    use insi_core::{Budget, EvalResult};
 
     fn task(id: &str, date: Option<&str>) -> Task {
         Task {
@@ -694,6 +773,86 @@ mod tests {
                 tokens: None,
             },
         }
+    }
+
+    fn spent(task: &str, model: Option<&str>, usage: Option<u64>, worker_ran: bool) -> EvalResult {
+        let mut phases = std::collections::BTreeMap::new();
+        if worker_ran {
+            phases.insert("worker".to_string(), 1.0);
+        }
+        EvalResult {
+            task: task.into(),
+            seed: 0,
+            kind: "worker".into(),
+            passed: false,
+            timed_out: false,
+            wall_secs: 1.0,
+            tokens: usage,
+            model: model.map(String::from),
+            usage: usage.map(|n| insi_core::Usage {
+                input: n,
+                ..Default::default()
+            }),
+            cost_usd: None,
+            signature: None,
+            error: None,
+            tags: vec![],
+            artifacts: None,
+            briefed: vec![],
+            phases,
+        }
+    }
+
+    /// **THE CAP STOPS NEW ATTEMPTS, AND AN UNKNOWN COST STOPS THEM TOO.**
+    /// Costs come from the model's price; crossing the cap stops the run
+    /// after that attempt is saved; an attempt that ran with no usage or no
+    /// price stops it rather than counting as free; one that never reached
+    /// its worker costs nothing.
+    #[test]
+    fn spend_is_capped_and_an_unknown_cost_is_not_free() {
+        let prices: std::collections::BTreeMap<String, insi_core::Price> = [(
+            "m".to_string(),
+            insi_core::Price {
+                input: 1.0,
+                ..Default::default()
+            },
+        )]
+        .into();
+        let mut a = spent("a", Some("m"), Some(400_000), true);
+        a.cost_usd = cost_of(&prices, &a);
+        assert!((a.cost_usd.expect("priced") - 0.4).abs() < 1e-9);
+
+        let mut spend = Spend {
+            cap: Some(1.0),
+            spent: 0.0,
+        };
+        assert!(spend.add(&a).is_ok());
+        assert!(spend.add(&a).is_ok());
+        let why = spend.add(&a).expect_err("over the cap");
+        assert!(why.contains("$1.20 of the $1.00"), "{why}");
+
+        let mut spend = Spend {
+            cap: Some(10.0),
+            spent: 0.0,
+        };
+        let unpriced = spent("b", Some("other"), Some(5), true);
+        assert_eq!(cost_of(&prices, &unpriced), None);
+        assert!(spend
+            .add(&unpriced)
+            .expect_err("unknown")
+            .contains("no price for \"other\""));
+        let silent = spent("c", None, None, true);
+        assert!(spend
+            .add(&silent)
+            .expect_err("unknown")
+            .contains("no usage"));
+        assert!(spend.add(&spent("d", None, None, false)).is_ok());
+
+        let mut uncapped = Spend {
+            cap: None,
+            spent: 0.0,
+        };
+        assert!(uncapped.add(&silent).is_ok());
     }
 
     /// **LEARN ON THE PAST, MEASURE ON THE FUTURE.** The halves split by

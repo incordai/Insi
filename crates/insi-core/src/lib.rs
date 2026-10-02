@@ -14,7 +14,7 @@ pub mod secrets;
 pub mod signature;
 pub mod task;
 
-pub use config::{Config, Worker};
+pub use config::{Config, Price, Worker};
 pub use lesson::{Lesson, Verification};
 pub use signature::normalize;
-pub use task::{Budget, EvalResult, Task};
+pub use task::{Budget, EvalResult, Task, Usage};

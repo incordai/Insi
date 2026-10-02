@@ -16,6 +16,11 @@ pub struct Totals {
     pub timed_out: usize,
     pub tokens: u64,
     pub wall_secs: f64,
+    /// US dollars, summed over the attempts that have a cost.
+    pub cost_usd: f64,
+    /// Attempts whose worker ran but whose cost is not known (no usage
+    /// reported, or no price for its model): the cost above is a floor.
+    pub uncosted: usize,
     /// Failures whose signature an earlier failure in the same condition
     /// already had: the repeat mistakes lessons exist to prevent.
     pub repeat_failures: usize,
@@ -43,6 +48,11 @@ pub fn by_condition(results: &[EvalResult]) -> BTreeMap<String, Totals> {
         t.attempts += 1;
         t.tokens += r.tokens.unwrap_or(0);
         t.wall_secs += r.wall_secs;
+        match r.cost_usd {
+            Some(c) => t.cost_usd += c,
+            None if r.phases.contains_key("worker") => t.uncosted += 1,
+            None => {}
+        }
         if r.error.is_some() {
             t.errors += 1;
             continue;
@@ -106,6 +116,9 @@ mod tests {
             timed_out: false,
             wall_secs: 1.0,
             tokens: Some(10),
+            model: None,
+            usage: None,
+            cost_usd: Some(0.5),
             signature: sig.map(String::from),
             error: None,
             tags: tags.iter().map(|t| t.to_string()).collect(),
@@ -129,6 +142,8 @@ mod tests {
         let by = by_condition(&results);
         let off = &by["lessons=off"];
         assert_eq!((off.attempts, off.passed, off.repeat_failures), (3, 1, 1));
+        assert!((off.cost_usd - 1.5).abs() < 1e-9, "{}", off.cost_usd);
+        assert_eq!(off.uncosted, 0);
         let on = &by["lessons=on"];
         assert_eq!((on.attempts, on.passed, on.repeat_failures), (3, 2, 0));
         assert!(on.pass_rate() > off.pass_rate());

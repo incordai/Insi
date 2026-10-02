@@ -14,7 +14,7 @@ pub const FILE: &str = "config.toml";
 /// What a worker command must contain: where the task's prompt goes.
 pub const PROMPT: &str = "{prompt}";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The topic lessons for this repo are filed under (`rust/incord/...`).
@@ -49,6 +49,37 @@ pub struct Config {
     pub trusted_issue_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<Worker>,
+    /// What each model costs, by the name the worker reports for it
+    /// (`model` in incode's result line). A model with no entry has no known
+    /// cost, and `insi eval --max-dollars` stops rather than count it free;
+    /// a model on a subscription is an entry of zeros.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub prices: std::collections::BTreeMap<String, Price>,
+}
+
+/// US dollars per million tokens, by kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Price {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+}
+
+impl Price {
+    /// What `usage` costs at this price, in US dollars.
+    pub fn cost(&self, usage: &crate::task::Usage) -> f64 {
+        (usage.input as f64 * self.input
+            + usage.output as f64 * self.output
+            + usage.cache_creation as f64 * self.cache_write
+            + usage.cache_read as f64 * self.cache_read)
+            / 1_000_000.0
+    }
 }
 
 /// The worker adapter: a command run inside the task's worktree, with the
@@ -179,6 +210,33 @@ mod tests {
 
         let why = Config::parse("tset_cmd = [\"x\"]").expect_err("misspelt");
         assert!(why.contains("tset_cmd"), "{why}");
+    }
+
+    /// **A PRICE IS PER MILLION TOKENS, PER KIND.** Read from the config by
+    /// model name; a kind left out costs nothing; a misspelt kind is refused.
+    #[test]
+    fn prices_are_read_by_model_and_applied_per_kind() {
+        let config = Config::parse(
+            r#"
+            [prices."claude-sonnet"]
+            input = 3.0
+            output = 15.0
+            cache_write = 3.75
+            cache_read = 0.3
+            [prices."subscription-model"]
+            "#,
+        )
+        .expect("valid");
+        let usage = crate::task::Usage {
+            input: 1_000_000,
+            output: 100_000,
+            cache_creation: 0,
+            cache_read: 2_000_000,
+        };
+        let cost = config.prices["claude-sonnet"].cost(&usage);
+        assert!((cost - (3.0 + 1.5 + 0.6)).abs() < 1e-9, "{cost}");
+        assert_eq!(config.prices["subscription-model"].cost(&usage), 0.0);
+        assert!(Config::parse("[prices.m]\ninptu = 1.0").is_err());
     }
 
     #[test]

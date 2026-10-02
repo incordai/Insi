@@ -297,7 +297,7 @@ fn work_in(
     let started = std::time::Instant::now();
     let ran = process::run(&run.worker.render(&prompt)?, tree, wall)?;
     let worker_secs = started.elapsed().as_secs();
-    let tokens = insi_eval::run::tokens_in(&ran.stdout);
+    let tokens = insi_eval::run::reported(&ran.stdout).map(|(_, usage)| usage.total());
 
     // Everything but the files the harness writes for itself.
     let mut add = vec!["add".to_string(), "--all".into(), "--".into(), ".".into()];

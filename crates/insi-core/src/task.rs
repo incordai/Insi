@@ -120,6 +120,16 @@ pub struct EvalResult {
     /// Tokens the worker reported, when it reports them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
+    /// The model the worker said it ran on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The tokens by kind, which is what a price applies to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    /// What the attempt cost in US dollars, from the config's price for
+    /// [`Self::model`]; `None` when there is no usage or no price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
     /// The normalized failure signature, when the check failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -141,6 +151,21 @@ pub struct EvalResult {
     /// none of them, and not in `wall_secs`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub phases: std::collections::BTreeMap<String, f64>,
+}
+
+/// Tokens a worker reported, by kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_creation: u64,
+    pub cache_read: u64,
+}
+
+impl Usage {
+    pub fn total(&self) -> u64 {
+        self.input + self.output + self.cache_creation + self.cache_read
+    }
 }
 
 impl EvalResult {
