@@ -23,6 +23,17 @@ pub struct Config {
     /// The public check: the repo's own test command, as argv.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_cmd: Vec<String>,
+    /// The hidden check `insi mine` gives each task, as argv; `{tests}`
+    /// stands for the task's hidden test files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub check: Vec<String>,
+    /// Run in a fresh worktree before anything else (installing
+    /// dependencies), as argv.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+    /// The wall-clock seconds a worker gets per task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_secs: Option<u64>,
     /// Paths a worker must never write (glob patterns, repo-relative).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected: Vec<String>,
@@ -126,6 +137,19 @@ impl Config {
     /// The worker this repo names, else incode.
     pub fn worker(&self) -> Worker {
         self.worker.clone().unwrap_or_else(Worker::incode)
+    }
+
+    /// The config as the file `insi init` writes.
+    pub fn to_toml(&self) -> Result<String, String> {
+        toml::to_string(self).map_err(|e| e.to_string())
+    }
+
+    /// Where tasks and hidden tests live by default, given the folder the
+    /// config was read from: `private_checks` resolved against it, with
+    /// `tasks/` and `hidden/` inside. `None` when it names none.
+    pub fn private_dirs(&self, repo: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let base = repo.join(self.private_checks.as_deref()?);
+        Some((base.join("tasks"), base.join("hidden")))
     }
 }
 

@@ -9,6 +9,33 @@ whether each task is a fair test. Lessons (an agent writing down what went
 wrong and being briefed with it next time) come next, and are judged by the
 same benchmark: `lessons=off` against `lessons=on`.
 
+## Adding Insi to a repository
+
+```sh
+cd your-repo
+insi init       # writes .insi/config.toml, ignores .insi-work/
+insi mine       # tasks from the history, hidden tests outside the checkout
+insi validate   # which tasks are fair
+insi eval --fair-only
+```
+
+`insi init` reads the files at the repository's root to tell how it is
+installed and tested — a Node lockfile (npm, pnpm, yarn, bun) with vitest or
+jest, Cargo, Python, Go — and writes what it found:
+
+```toml
+topic = "shop"
+check = ["npx", "vitest", "run", "{tests}"]
+setup = ["npm", "ci"]
+private_checks = "../insi-private/shop"
+```
+
+Every key can be edited; `--check` and `--setup` replace what was detected,
+and an existing config is never overwritten without `--force`. With a
+config, `mine` needs no flags, and every command finds its tasks in
+`<private_checks>/tasks` and the hidden tests in `<private_checks>/hidden`,
+outside the checkout a worker works in.
+
 ## How a task is made
 
 `insi mine` reads a repository's history — only reads it — and turns every

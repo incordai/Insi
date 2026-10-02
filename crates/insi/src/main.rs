@@ -1,7 +1,8 @@
 //! `insi` — the command line.
 //!
 //! ```text
-//! insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
+//! insi init     [--repo <dir>] [--check "<cmd {tests}>"] [--setup "<cmd>"] [--force]
+//! insi mine     [--source <repo>] [--tasks <dir>] [--private <dir>] [--check "<cmd {tests}>"]
 //!               [--setup "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
 //! insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
 //! insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
@@ -20,6 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod init;
 mod learn;
 
 use insi_core::{Config, Task, Worker};
@@ -32,7 +34,8 @@ use insi_memory::briefing;
 use insi_memory::store::{FileLessons, LessonStore};
 
 const USAGE: &str = "usage:
-  insi mine     --source <repo> --tasks <dir> --private <dir> --check \"<cmd {tests}>\"
+  insi init     [--repo <dir>] [--check \"<cmd {tests}>\"] [--setup \"<cmd>\"] [--force]
+  insi mine     [--source <repo>] [--tasks <dir>] [--private <dir>] [--check \"<cmd {tests}>\"]
                 [--setup \"<cmd>\"] [--prefix <name>] [--limit N] [--wall-secs N]
   insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
   insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker \"<cmd {prompt}>\"]
@@ -41,6 +44,11 @@ const USAGE: &str = "usage:
   insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"]
                 [--results <file>] [--jobs N]
   insi report   [--results <file>]
+
+In a repository with .insi/config.toml (write one with `insi init`), the
+check, setup, prefix and budget come from it, and --tasks/--private default
+to <private_checks>/tasks and <private_checks>/hidden, so `insi mine` needs
+no flags at all.
 
 Tasks come from a repository's history and are only read from it; every
 worktree lives in Insi's own clone under --work (default .insi-work).
@@ -83,10 +91,6 @@ impl Flags {
     }
     fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).and_then(|v| v.as_deref())
-    }
-    fn need(&self, key: &str) -> Result<&str, String> {
-        self.get(key)
-            .ok_or_else(|| format!("--{key} is required\n\n{USAGE}"))
     }
     fn has(&self, key: &str) -> bool {
         self.0.contains_key(key)
@@ -141,6 +145,7 @@ fn command_by_name(
     results: &Path,
 ) -> Result<(), String> {
     match command {
+        "init" => init_cmd(flags),
         "mine" => mine_cmd(flags),
         "validate" => validate_cmd(flags, work, results),
         "eval" => eval_cmd(flags, work, results),
@@ -158,26 +163,97 @@ fn command_by_name(
     }
 }
 
+/// The current folder's `.insi/config.toml`, or the defaults.
+fn repo_config() -> Result<(PathBuf, Config), String> {
+    let here = std::env::current_dir().map_err(|e| e.to_string())?;
+    let config = Config::load(&here)?;
+    Ok((here, config))
+}
+
+/// Where tasks and hidden tests are: `--tasks` and `--private`, else the
+/// config's `private_checks` folder.
 fn store(flags: &Flags) -> Result<Store, String> {
+    let (here, config) = repo_config()?;
+    let defaults = config.private_dirs(&here);
+    let pick = |flag: &str, default: Option<&PathBuf>| -> Result<PathBuf, String> {
+        flags
+            .get(flag)
+            .map(PathBuf::from)
+            .or_else(|| default.cloned())
+            .ok_or_else(|| {
+                format!(
+                    "--{flag} is required (or run `insi init` to set private_checks)\n\n{USAGE}"
+                )
+            })
+    };
     Ok(Store {
-        tasks: PathBuf::from(flags.need("tasks")?),
-        private: PathBuf::from(flags.need("private")?),
+        tasks: pick("tasks", defaults.as_ref().map(|d| &d.0))?,
+        private: pick("private", defaults.as_ref().map(|d| &d.1))?,
     })
 }
 
+fn init_cmd(flags: &Flags) -> Result<(), String> {
+    let repo = PathBuf::from(flags.get("repo").unwrap_or("."));
+    let setup = flags.has("setup").then(|| flags.argv("setup"));
+    let done = init::init(&repo, flags.argv("check"), setup, flags.has("force"))?;
+    match &done.detected {
+        Some(d) => println!("detected: {}", d.stack),
+        None => println!("detected: nothing; using the commands given"),
+    }
+    println!("wrote {}", done.config_path.display());
+    println!("  check   {}", done.config.check.join(" "));
+    println!(
+        "  setup   {}",
+        if done.config.setup.is_empty() {
+            "(none)".to_string()
+        } else {
+            done.config.setup.join(" ")
+        }
+    );
+    println!(
+        "  private {}  (outside the checkout)",
+        done.config.private_checks.as_deref().unwrap_or_default()
+    );
+    if done.gitignore_changed {
+        println!("added {} to .gitignore", init::WORK_IGNORE);
+    }
+    println!(
+        "\nnext, from this folder:\n  insi mine\n  insi validate --jobs 2\n  insi eval --fair-only"
+    );
+    Ok(())
+}
+
 fn mine_cmd(flags: &Flags) -> Result<(), String> {
-    let source = PathBuf::from(flags.need("source")?);
-    let check = flags.argv("check");
+    let (_, config) = repo_config()?;
+    // Absolute: a task's source is later cloned from inside Insi's own work
+    // folder, where "." would mean that folder. (`absolute`, not
+    // `canonicalize`, which on Windows gives a `\\?\` path git may not take.)
+    let source = std::path::absolute(flags.get("source").unwrap_or("."))
+        .map_err(|e| format!("--source: {e}"))?;
+    let check = match flags.argv("check") {
+        given if !given.is_empty() => given,
+        _ => config.check.clone(),
+    };
     if check.is_empty() {
-        return Err(format!("--check is required\n\n{USAGE}"));
+        return Err(format!(
+            "--check is required (or run `insi init` to set it)\n\n{USAGE}"
+        ));
     }
     let opts = Options {
         test_markers: Options::default_markers(),
         check,
-        setup: flags.argv("setup"),
-        wall_secs: flags.number("wall-secs", 900)?,
+        setup: if flags.has("setup") {
+            flags.argv("setup")
+        } else {
+            config.setup.clone()
+        },
+        wall_secs: flags.number("wall-secs", config.wall_secs.unwrap_or(1800))?,
         limit: flags.number("limit", 30)? as usize,
-        id_prefix: flags.get("prefix").unwrap_or("task").to_string(),
+        id_prefix: flags
+            .get("prefix")
+            .map(String::from)
+            .or(config.topic.clone())
+            .unwrap_or_else(|| "task".to_string()),
     };
     let store = store(flags)?;
     let mined = mine::mine(&source, &opts)?;

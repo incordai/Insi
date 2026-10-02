@@ -117,6 +117,10 @@ impl Work {
     /// A work folder where up to `setup_jobs` pieces of bulk disk work (a
     /// setup, or deleting a finished worktree) run at once.
     pub fn with_setup_jobs(root: PathBuf, setup_jobs: usize) -> Work {
+        // Absolute, once: paths under the root are handed to git commands
+        // that run inside a clone, where a relative one would resolve
+        // against the clone instead.
+        let root = std::path::absolute(&root).unwrap_or(root);
         let work = Work {
             root,
             git_lock: std::sync::Mutex::new(()),
@@ -183,11 +187,7 @@ impl Work {
     /// Insi's clone of `source`, made on first use and fetched after.
     pub fn clone_of(&self, source: &str) -> Result<PathBuf, String> {
         let _held = self.lock();
-        let name: String = source
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        let dir = self.root.join("clones").join(name.trim_matches('_'));
+        let dir = self.root.join("clones").join(clone_name(source));
         if dir.join(".git").exists() || dir.join("HEAD").exists() {
             git(&dir, &["fetch", "--quiet", "origin"])?;
         } else {
@@ -272,6 +272,37 @@ impl Work {
         let _held = self.lock();
         let _ = git(clone, &["worktree", "prune"]);
     }
+}
+
+/// The folder a source is cloned into: the source's own last name, then a
+/// hash of the whole source, so two sources with one name stay apart. Not the
+/// whole path spelt out: under a work folder that is itself deep, a checkout
+/// with its installed dependencies then passes Windows' path limit and `git
+/// clone` fails with "Filename too long".
+fn clone_name(source: &str) -> String {
+    let last = source
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\', ':'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(".git");
+    let readable: String = last
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(32)
+        .collect();
+    // FNV-1a: stable across runs and platforms, unlike std's hasher.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in source.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let readable = if readable.is_empty() {
+        "repo"
+    } else {
+        &readable
+    };
+    format!("{readable}-{:08x}", hash as u32)
 }
 
 /// The settings of one attempt.
@@ -551,6 +582,22 @@ mod tests {
         assert_eq!(tokens_in("plain text, no json"), None);
     }
 
+    /// **A CLONE'S NAME IS SHORT, READABLE AND ITS OWN.** The repository's
+    /// name and a hash: two sources sharing a name never share a clone, and a
+    /// deep source path does not make a deep clone path.
+    #[test]
+    fn clone_names_are_short_and_distinct() {
+        let deep =
+            "C:\\Users\\someone\\AppData\\Local\\Temp\\a\\very\\deep\\scratch\\init-demo\\shop";
+        let name = clone_name(deep);
+        assert!(name.starts_with("shop-") && name.len() <= 32 + 9, "{name}");
+        assert_eq!(clone_name(deep), name, "stable");
+        assert_ne!(clone_name("D:/one/shop"), clone_name("D:/two/shop"));
+        assert!(clone_name("https://github.com/acme/widgets.git").starts_with("widgets-"));
+        assert!(clone_name("D:/Projects/watchman/").starts_with("watchman-"));
+        assert!(clone_name("/").starts_with("repo-"));
+    }
+
     /// **NO MORE SETUPS AT ONCE THAN ALLOWED.** Six threads through two
     /// slots never have three inside.
     #[test]
@@ -655,7 +702,21 @@ mod tests {
                 )],
             })
             .expect("saved");
-        let work = Work::new(temp_dir("work"));
+        // A RELATIVE work folder, as `--work` defaults to: every path under
+        // it must still reach git as the right folder.
+        // Under the workspace's own (git-ignored) `target/`, which is on the
+        // drive the tests run from, so a relative path to it exists.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let relative = PathBuf::from(format!(
+            "../../target/insi-test-work-{}-{nanos}",
+            std::process::id()
+        ));
+        let work = Work::new(relative.clone());
+        assert!(work.root.is_absolute(), "{}", work.root.display());
+        assert!(work.root.ends_with(relative.file_name().expect("name")));
         let worker = Worker::incode();
         let run_kind = |kind| {
             attempt(
