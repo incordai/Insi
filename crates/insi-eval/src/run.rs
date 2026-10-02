@@ -43,13 +43,33 @@ impl Kind {
 }
 
 /// Insi's work folder: its clones, worktrees and results.
+///
+/// Attempts may run on several threads at once. Their worktrees are their
+/// own, but the clone they come from is shared, and git refuses two writers
+/// on one repository (`index.lock`, `worktrees/` bookkeeping): every git
+/// command on a clone takes [`Work::git_lock`] first.
 pub struct Work {
     pub root: PathBuf,
+    git_lock: std::sync::Mutex<()>,
 }
 
 impl Work {
+    pub fn new(root: PathBuf) -> Work {
+        Work {
+            root,
+            git_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        // A thread that panicked while holding it left no git state the next
+        // command cannot meet; the lock only orders commands.
+        self.git_lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Insi's clone of `source`, made on first use and fetched after.
     pub fn clone_of(&self, source: &str) -> Result<PathBuf, String> {
+        let _held = self.lock();
         let name: String = source
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
@@ -75,6 +95,7 @@ impl Work {
     }
 
     fn worktree(&self, clone: &Path, commit: &str, name: &str) -> Result<PathBuf, String> {
+        let _held = self.lock();
         let path = self.root.join("runs").join(name);
         if path.exists() {
             let _ = git(
@@ -98,6 +119,7 @@ impl Work {
     }
 
     fn drop_worktree(&self, clone: &Path, path: &Path) {
+        let _held = self.lock();
         let _ = git(
             clone,
             &["worktree", "remove", "--force", &path.display().to_string()],
@@ -204,7 +226,9 @@ fn run_in(tree: &Path, store: &Store, a: &Attempt, result: &mut EvalResult) -> R
     let check = process::run(&task.check_argv(), tree, Duration::from_secs(CHECK_SECS))?;
     result.passed = check.success();
     if !result.passed {
-        result.signature = Some(normalize(&last_lines(&check.tail(), 40)));
+        // The whole kept output: a runner prints the failure's details above
+        // its summary, and `normalize` picks the lines that say what failed.
+        result.signature = Some(normalize(&check.tail()));
     }
     Ok(())
 }

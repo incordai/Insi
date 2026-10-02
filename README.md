@@ -52,15 +52,16 @@ a repeat.
 ```text
 insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
               [--setup "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
-insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>]
+insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>] [--jobs N]
 insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
-              [--fair-only] [--only id,id] [--results <file>] [--keep]
+              [--fair-only] [--only id,id] [--results <file>] [--keep] [--jobs N]
 insi report   [--results <file>]
 ```
 
 Every command takes `--work <dir>` (default `.insi-work`): Insi's clones,
 worktrees and the results file (`results.jsonl`, one line per attempt,
-appended).
+appended). `--jobs N` runs N attempts at once; an attempt spends most of its
+time in setup and test runs, so a few at once save most of the wall clock.
 
 Example, a TypeScript project tested with vitest:
 

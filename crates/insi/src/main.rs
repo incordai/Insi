@@ -3,9 +3,9 @@
 //! ```text
 //! insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
 //!               [--setup "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
-//! insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>]
+//! insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>] [--jobs N]
 //! insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
-//!               [--fair-only] [--only id,id] [--results <file>] [--keep]
+//!               [--fair-only] [--only id,id] [--results <file>] [--keep] [--jobs N]
 //! insi report   [--results <file>]
 //! ```
 //!
@@ -19,6 +19,7 @@ use std::process::ExitCode;
 
 use insi_core::{Config, Worker};
 use insi_eval::mine::{self, Options};
+use insi_eval::pool;
 use insi_eval::report;
 use insi_eval::run::{self, Attempt, Kind, Work};
 use insi_eval::store::{self, Store};
@@ -26,9 +27,9 @@ use insi_eval::store::{self, Store};
 const USAGE: &str = "usage:
   insi mine     --source <repo> --tasks <dir> --private <dir> --check \"<cmd {tests}>\"
                 [--setup \"<cmd>\"] [--prefix <name>] [--limit N] [--wall-secs N]
-  insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>]
+  insi validate --tasks <dir> --private <dir> [--only id,id] [--results <file>] [--jobs N]
   insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker \"<cmd {prompt}>\"]
-                [--fair-only] [--only id,id] [--results <file>] [--keep]
+                [--fair-only] [--only id,id] [--results <file>] [--keep] [--jobs N]
   insi report   [--results <file>]
 
 Tasks come from a repository's history and are only read from it; every
@@ -99,9 +100,7 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err(USAGE.to_string());
     };
     let flags = Flags::parse(rest)?;
-    let work = Work {
-        root: PathBuf::from(flags.get("work").unwrap_or(".insi-work")),
-    };
+    let work = Work::new(PathBuf::from(flags.get("work").unwrap_or(".insi-work")));
     let results = flags
         .get("results")
         .map(PathBuf::from)
@@ -178,31 +177,47 @@ fn selected(flags: &Flags, store: &Store) -> Result<Vec<insi_core::Task>, String
 
 fn validate_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
     let store = store(flags)?;
+    // The controls never start a worker; one is named only to fill the
+    // attempt.
     let worker = Worker::incode();
-    for task in selected(flags, &store)? {
-        let mut verdicts = Vec::new();
-        for kind in [Kind::Base, Kind::Reference] {
-            let r = run::attempt(
+    let tasks = selected(flags, &store)?;
+    let runs: Vec<(&insi_core::Task, Kind)> = tasks
+        .iter()
+        .flat_map(|t| [(t, Kind::Base), (t, Kind::Reference)])
+        .collect();
+    pool::each(
+        &runs,
+        jobs(flags)?,
+        |(task, kind)| {
+            run::attempt(
                 work,
                 &store,
                 &Attempt {
-                    task: &task,
-                    kind,
+                    task,
+                    kind: *kind,
                     seed: 0,
                     worker: &worker,
                     preface: "",
                     tags: vec![],
                     keep: flags.has("keep"),
                 },
-            );
+            )
+        },
+        |(task, kind), r| {
             store::append_result(results, &r)?;
-            verdicts.push(match (&r.error, r.passed) {
-                (Some(e), _) => format!("{}: ERROR {}", kind.name(), first_line(e)),
-                (None, p) => format!("{}: {}", kind.name(), if p { "pass" } else { "fail" }),
-            });
-        }
-        println!("{}  {}", task.id, verdicts.join("  "));
-    }
+            let verdict = match (&r.error, r.passed) {
+                (Some(e), _) => format!("ERROR {}", first_line(e)),
+                (None, p) => (if p { "pass" } else { "fail" }).to_string(),
+            };
+            println!(
+                "{}  {}: {verdict}  {:.0}s",
+                task.id,
+                kind.name(),
+                r.wall_secs
+            );
+            Ok(())
+        },
+    )?;
     let all = store::read_results(results)?;
     let fair = report::fair_tasks(&all);
     let good = fair.values().filter(|v| **v == Some(true)).count();
@@ -232,21 +247,28 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
             return Err("no task has passed `insi validate` yet".to_string());
         }
     }
-    for seed in 0..seeds {
-        for task in &tasks {
-            let r = run::attempt(
+    let runs: Vec<(u32, &insi_core::Task)> = (0..seeds)
+        .flat_map(|seed| tasks.iter().map(move |t| (seed, t)))
+        .collect();
+    pool::each(
+        &runs,
+        jobs(flags)?,
+        |(seed, task)| {
+            run::attempt(
                 work,
                 &store,
                 &Attempt {
                     task,
                     kind: Kind::Worker,
-                    seed,
+                    seed: *seed,
                     worker: &worker,
                     preface: "",
                     tags: tags.clone(),
                     keep: flags.has("keep"),
                 },
-            );
+            )
+        },
+        |(seed, task), r| {
             store::append_result(results, &r)?;
             println!(
                 "{} s{seed}  {}  {:.0}s{}{}",
@@ -265,8 +287,9 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
                     .map(|e| format!("  {}", first_line(e)))
                     .unwrap_or_default()
             );
-        }
-    }
+            Ok(())
+        },
+    )?;
     report_cmd(results)
 }
 
@@ -290,6 +313,14 @@ fn report_cmd(results: &Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// How many attempts run at once: `--jobs`, default 1.
+fn jobs(flags: &Flags) -> Result<usize, String> {
+    match flags.number("jobs", 1)? {
+        0 => Err("--jobs must be at least 1".to_string()),
+        n => Ok(n as usize),
+    }
 }
 
 fn first_line(text: &str) -> &str {

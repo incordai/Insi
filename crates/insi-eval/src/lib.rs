@@ -15,6 +15,7 @@
 
 pub mod git;
 pub mod mine;
+pub mod pool;
 pub mod process;
 pub mod report;
 pub mod run;
