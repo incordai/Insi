@@ -102,7 +102,7 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "topic": { "type": "string", "description": "The repository's topic, as in its .insi/config.toml." },
+                    "topic": { "type": "string", "description": "The repository's topic, as in its .insi/config.toml, or a narrower one from its topic_rules (shop/api); lessons of the topics above it are included." },
                     "before": { "type": "string", "description": "Only lessons learned before this time (RFC 3339). Omit for all." },
                     "max_chars": { "type": "integer", "description": "Longest briefing wanted (default 4000, at most 16000)." }
                 },
@@ -118,7 +118,7 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "error": { "type": "string", "description": "The error output." },
-                    "topic": { "type": "string", "description": "Limit to this repository's topic." }
+                    "topic": { "type": "string", "description": "Limit to this topic, the topics above it and those below it." }
                 },
                 "required": ["error"]
             }
@@ -182,13 +182,15 @@ fn call(
 }
 
 /// Lessons whose failure signature shares lines with `error`'s, most shared
-/// first; at most [`MAX_MATCHES`].
+/// first; at most [`MAX_MATCHES`]. With a topic, only lessons on its line of
+/// descent: a failure's signature is evidence enough within one repository,
+/// whichever part of it the lesson was filed under.
 pub fn matching<'a>(lessons: &'a [Lesson], error: &str, topic: Option<&str>) -> Vec<&'a Lesson> {
     let wanted = normalize(error);
     let wanted: Vec<&str> = wanted.lines().collect();
     let mut scored: Vec<(usize, &Lesson)> = lessons
         .iter()
-        .filter(|l| topic.is_none_or(|t| l.topic == t))
+        .filter(|l| topic.is_none_or(|t| insi_core::topic::related(&l.topic, t)))
         .map(|l| {
             let shared = l
                 .signature

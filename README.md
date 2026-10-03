@@ -222,6 +222,36 @@ Anything it cannot read is no answer and exit 0, with the reason on stderr.
 `insi init` writes it into a missing `.claude/settings.json`; an existing one
 is left alone and init prints the block to merge in.
 
+## Topics: which lessons apply where
+
+A lesson is filed on a topic, a `/`-separated path broadest first
+(`shop` → `shop/api` → `shop/api/billing`), and applies to that topic and
+every one below it. The repository's `topic` is the base; `[[topic_rules]]`
+in `.insi/config.toml` name narrower ones by the files and commands they
+cover. Resolution is by these rules only, never a model, and the same files
+always give the same topic.
+
+```toml
+[[topic_rules]]
+topic = "shop/api"
+paths = ["src/api"]              # a folder covers everything under it; * and ? stay in one name, ** spans folders
+commands = ["npm run test:api"]  # these words, side by side, anywhere in the command
+```
+
+- **`insi learn`** files each lesson on the narrowest topic covering every
+  file its fix changed; files outside every rule leave it on the base.
+- **The briefing** for a task holds its topic's lessons and those of the
+  topics above it. A task starts on the repository's topic, so lessons filed
+  narrower are not in it.
+- **`insi hook`** brings those back when the agent edits a file in their
+  part of the repository, and matches a failed command on the command's
+  topic. In `insi eval` the worker gets the briefing only, so in a
+  measurement only lessons on the base topic or above are used.
+
+The most specific rule wins (deepest topic, then the first in the file); a
+rule with no paths and no commands, or a topic with an empty part, is
+refused when the config is read.
+
 ## Commands
 
 ```text

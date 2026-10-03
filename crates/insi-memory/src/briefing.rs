@@ -1,9 +1,11 @@
 //! The text put in front of a task: what earlier work taught.
 //!
-//! Only lessons of the task's topic, learned strictly BEFORE the task, and
-//! not from the task itself; newest first, one per action, within a size
-//! budget. Each is phrased as an action, as the PRD asks: "Use X", "not Y".
+//! Only lessons of the task's topic or a topic above it, learned strictly
+//! BEFORE the task, and not from the task itself; newest first, one per
+//! action, within a size budget. Each is phrased as an action, as the PRD
+//! asks: "Use X", "not Y".
 
+use insi_core::topic::covers;
 use insi_core::Lesson;
 
 /// A briefing for a task, and the lessons it holds.
@@ -25,7 +27,7 @@ pub fn build(
 ) -> Briefing {
     let mut usable: Vec<&Lesson> = lessons
         .iter()
-        .filter(|l| l.topic == topic && l.evidence != task_id && l.precedes(task_date))
+        .filter(|l| covers(&l.topic, topic) && l.evidence != task_id && l.precedes(task_date))
         .collect();
     // Newest first: the code the task starts from is closest to them.
     usable.sort_by_key(|l| {
@@ -127,6 +129,28 @@ mod tests {
             .text
             .contains("- Read the config. Not: guessing (Seen when: issue new)"));
         assert!(!b.text.contains("future") && !b.text.contains("Other topic"));
+    }
+
+    /// **A TOPIC INHERITS ITS PARENTS' LESSONS, NOT ITS CHILDREN'S OR ITS
+    /// SIBLINGS'.**
+    #[test]
+    fn a_briefing_holds_the_lessons_of_the_topics_above() {
+        let at = "2026-01-01T00:00:00Z";
+        let lessons = vec![
+            lesson("repo", "shop", "t1", at, "Repo-wide."),
+            lesson("api", "shop/api", "t2", at, "Api only."),
+            lesson("billing", "shop/api/billing", "t3", at, "Billing only."),
+            lesson("web", "shop/web", "t4", at, "Web only."),
+        ];
+        let ids = |topic: &str| {
+            let mut ids =
+                build(&lessons, topic, "x", Some("2026-06-01T00:00:00Z"), 4_000).lesson_ids;
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids("shop/api"), ["api", "repo"]);
+        assert_eq!(ids("shop"), ["repo"]);
+        assert_eq!(ids("shop/api/billing"), ["api", "billing", "repo"]);
     }
 
     #[test]

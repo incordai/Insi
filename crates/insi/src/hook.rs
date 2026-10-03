@@ -6,10 +6,14 @@
 //!
 //! - **PreToolUse**, before an edit (`Edit`, `Write`, `MultiEdit`,
 //!   `NotebookEdit`): lessons whose text names the file being edited — by
-//!   its path in the repository, or by its file name.
+//!   its path in the repository, or by its file name. And, when the file's
+//!   topic (by `topic_rules`) is narrower than the repository's, the lessons
+//!   filed there: the briefing is the repository's, so this is where the
+//!   agent first hears what that part of it taught.
 //! - **PostToolUseFailure**, after a `Bash` command that failed: lessons
 //!   whose failure signature shares lines with its output (the same match as
-//!   `insi_lessons_for_error`). A failed command does not raise PostToolUse
+//!   `insi_lessons_for_error`), on the command's topic's line of descent.
+//!   A failed command does not raise PostToolUse
 //!   at all; Claude Code (measured on 2.1.288) raises PostToolUseFailure with
 //!   `error` = `"Exit code N\n<output>"` and no `tool_response`.
 //!
@@ -23,6 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
+use insi_core::topic::{covers, Topics};
 use insi_core::Lesson;
 use serde_json::{json, Value};
 
@@ -86,12 +91,13 @@ fn output_tail(text: &str) -> Option<String> {
     (!tail.is_empty()).then_some(tail)
 }
 
-/// The lessons of `topic` that bear on `moment`, best first, not counting
-/// the ids in `shown`.
+/// The lessons that bear on `moment` in topic `here` of a repository whose
+/// own topic is `base`, best first, not counting the ids in `shown`.
 pub fn lessons_for<'a>(
     moment: &Moment,
     lessons: &'a [Lesson],
-    topic: &str,
+    here: &str,
+    base: &str,
     shown: &[String],
 ) -> Vec<&'a Lesson> {
     let fresh = |l: &&Lesson| !shown.contains(&l.id);
@@ -100,7 +106,7 @@ pub fn lessons_for<'a>(
             let name = file.rsplit('/').next().unwrap_or(file);
             let mut scored: Vec<(u8, &Lesson)> = lessons
                 .iter()
-                .filter(|l| l.topic == topic)
+                .filter(|l| covers(&l.topic, here))
                 .filter(fresh)
                 .filter_map(|l| {
                     let text = [
@@ -111,8 +117,12 @@ pub fn lessons_for<'a>(
                     ]
                     .join("\n");
                     if file.contains('/') && text.contains(file.as_str()) {
-                        Some((2, l))
+                        Some((3, l))
                     } else if names_file(&text, name) {
+                        Some((2, l))
+                    } else if !covers(&l.topic, base) {
+                        // Filed below the repository's topic: not in the
+                        // briefing, and this file is in its part.
                         Some((1, l))
                     } else {
                         None
@@ -122,7 +132,7 @@ pub fn lessons_for<'a>(
             scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
             scored.into_iter().map(|(_, l)| l).take(MAX_SHOWN).collect()
         }
-        Moment::Failed(output) => crate::mcp::matching(lessons, output, Some(topic))
+        Moment::Failed(output) => crate::mcp::matching(lessons, output, Some(here))
             .into_iter()
             .filter(fresh)
             .take(MAX_SHOWN)
@@ -196,11 +206,17 @@ pub fn shown_file(work: &Path, session: &str) -> Option<PathBuf> {
 pub fn respond(
     event: &Value,
     lessons: &dyn Fn() -> Result<Vec<Lesson>, String>,
-    topic: &str,
+    topics: Topics,
     work: &Path,
 ) -> Result<Option<Value>, String> {
     let Some(moment) = moment(event) else {
         return Ok(None);
+    };
+    let here = match &moment {
+        Moment::Editing(file) => topics.for_paths(std::slice::from_ref(file)),
+        Moment::Failed(_) => event["tool_input"]["command"]
+            .as_str()
+            .map_or_else(|| topics.base.to_string(), |c| topics.for_command(c)),
     };
     let all = lessons().map_err(|e| format!("the lessons could not be read: {e}"))?;
     let shown_path = event["session_id"]
@@ -211,7 +227,7 @@ pub fn respond(
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|text| text.lines().map(String::from).collect())
         .unwrap_or_default();
-    let chosen = lessons_for(&moment, &all, topic, &shown);
+    let chosen = lessons_for(&moment, &all, &here, topics.base, &shown);
     if chosen.is_empty() {
         return Ok(None);
     }
@@ -319,12 +335,12 @@ mod tests {
             },
         ];
         let at = Moment::Editing("src/pty.ts".into());
-        let ids: Vec<&str> = lessons_for(&at, &all, "app", &[])
+        let ids: Vec<&str> = lessons_for(&at, &all, "app", "app", &[])
             .iter()
             .map(|l| l.id.as_str())
             .collect();
         assert_eq!(ids, ["by-path", "by-name"]);
-        let ids: Vec<&str> = lessons_for(&at, &all, "app", &["by-path".into()])
+        let ids: Vec<&str> = lessons_for(&at, &all, "app", "app", &["by-path".into()])
             .iter()
             .map(|l| l.id.as_str())
             .collect();
@@ -356,7 +372,11 @@ mod tests {
             "is_interrupt": false
         });
         let lessons = || Ok(all.clone());
-        let first = respond(&event, &lessons, "app", &dir)
+        let app = Topics {
+            base: "app",
+            rules: &[],
+        };
+        let first = respond(&event, &lessons, app, &dir)
             .expect("read")
             .expect("answered");
         assert_eq!(
@@ -371,14 +391,96 @@ mod tests {
             "{text}"
         );
         assert_eq!(
-            respond(&event, &lessons, "app", &dir),
+            respond(&event, &lessons, app, &dir),
             Ok(None),
             "shown again"
         );
         let unreadable = || Err("bad line 3".to_string());
-        assert!(respond(&event, &unreadable, "app", &dir)
+        assert!(respond(&event, &unreadable, app, &dir)
             .expect_err("said why")
             .contains("bad line 3"));
+    }
+
+    /// **ENTERING A PART OF THE REPOSITORY BRINGS ITS LESSONS.** Editing a
+    /// file under a topic rule shows the lessons filed on that topic even
+    /// when they do not name the file — the briefing was the repository's
+    /// and held none of them; a sibling part's lessons stay out, and a
+    /// repository-wide lesson still has to name the file. A failed command
+    /// is matched on its own topic's line of descent.
+    #[test]
+    fn a_files_topic_brings_the_lessons_filed_there() {
+        let rules = vec![
+            insi_core::topic::TopicRule {
+                topic: "app/api".into(),
+                paths: vec!["src/api".into()],
+                commands: vec!["npm run test:api".into()],
+            },
+            insi_core::topic::TopicRule {
+                topic: "app/web".into(),
+                paths: vec!["src/web".into()],
+                commands: vec!["npm run test:web".into()],
+            },
+        ];
+        let topics = Topics {
+            base: "app",
+            rules: &rules,
+        };
+        let on = |topic: &str, l: Lesson| Lesson {
+            topic: topic.into(),
+            ..l
+        };
+        let all = vec![
+            on("app/api", lesson("api", "Orders are idempotent.", "")),
+            on("app/web", lesson("web", "Forms debounce.", "")),
+            lesson("wide", "Run the linter first.", ""),
+            on(
+                "app/web",
+                lesson("web-fail", "r", "Error: hydration mismatch"),
+            ),
+            lesson("wide-fail", "r", "Error: hydration mismatch"),
+        ];
+        let here = topics.for_paths(&["src/api/orders.ts".to_string()]);
+        assert_eq!(here, "app/api");
+        let ids: Vec<&str> = lessons_for(
+            &Moment::Editing("src/api/orders.ts".into()),
+            &all,
+            &here,
+            "app",
+            &[],
+        )
+        .iter()
+        .map(|l| l.id.as_str())
+        .collect();
+        assert_eq!(ids, ["api"]);
+
+        let failed = |command: &str| {
+            json!({
+                "session_id": format!("s-{command}"),
+                "hook_event_name": "PostToolUseFailure",
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+                "error": "Exit code 1\nError: hydration mismatch",
+                "is_interrupt": false
+            })
+        };
+        let dir = std::env::temp_dir().join(format!("insi-hook-topic-{}", std::process::id()));
+        let lessons = || Ok(all.clone());
+        let said = |command: &str| {
+            respond(&failed(command), &lessons, topics, &dir)
+                .expect("read")
+                .map(|v| v["hookSpecificOutput"]["additionalContext"].to_string())
+                .unwrap_or_default()
+        };
+        let api = said("npm run test:api");
+        assert!(
+            api.contains("use wide-fail") && !api.contains("use web-fail"),
+            "{api}"
+        );
+        let web = said("npm run test:web");
+        assert!(
+            web.contains("use web-fail") && web.contains("use wide-fail"),
+            "{web}"
+        );
     }
 
     #[test]

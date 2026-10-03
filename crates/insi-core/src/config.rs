@@ -20,6 +20,10 @@ pub struct Config {
     /// The topic lessons for this repo are filed under (`rust/incord/...`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
+    /// Narrower topics by the files and commands they cover; see
+    /// [`crate::topic`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub topic_rules: Vec<crate::topic::TopicRule>,
     /// The public check: the repo's own test command, as argv.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_cmd: Vec<String>,
@@ -167,7 +171,25 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Config, String> {
-        toml::from_str(text).map_err(|e| e.to_string())
+        let config: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+        if let Some(why) = config
+            .topic
+            .as_deref()
+            .and_then(crate::topic::topic_problem)
+            .or_else(|| config.topic_rules.iter().find_map(|r| r.problem()))
+        {
+            return Err(why);
+        }
+        Ok(config)
+    }
+
+    /// The base topic and this repo's rules, `base` standing in when no
+    /// `topic` is set.
+    pub fn topics<'a>(&'a self, base: &'a str) -> crate::topic::Topics<'a> {
+        crate::topic::Topics {
+            base: self.topic.as_deref().unwrap_or(base),
+            rules: &self.topic_rules,
+        }
     }
 
     /// The worker this repo names, else incode.
@@ -215,6 +237,30 @@ mod tests {
 
         let why = Config::parse("tset_cmd = [\"x\"]").expect_err("misspelt");
         assert!(why.contains("tset_cmd"), "{why}");
+    }
+
+    /// **TOPIC RULES ARE READ, AND ONE THAT CAN NEVER APPLY IS REFUSED.**
+    #[test]
+    fn topic_rules_are_read_and_checked() {
+        let config = Config::parse(
+            r#"
+            topic = "shop"
+            [[topic_rules]]
+            topic = "shop/api"
+            paths = ["src/api"]
+            commands = ["npm run test:api"]
+            "#,
+        )
+        .expect("valid");
+        let topics = config.topics("unused");
+        assert_eq!(topics.base, "shop");
+        assert_eq!(topics.for_paths(&["src/api/a.ts".to_string()]), "shop/api");
+        assert_eq!(Config::default().topics("repo").base, "repo");
+
+        let why = Config::parse("[[topic_rules]]\ntopic = \"shop/api\"").expect_err("empty");
+        assert!(why.contains("no paths"), "{why}");
+        assert!(Config::parse("topic = \"shop//x\"").is_err());
+        assert!(Config::parse("[[topic_rules]]\ntopic = \"a\"\npath = [\"x\"]").is_err());
     }
 
     /// **A PRICE IS PER MILLION TOKENS, PER KIND.** Read from the config by

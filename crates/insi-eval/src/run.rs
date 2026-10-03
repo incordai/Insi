@@ -591,15 +591,30 @@ fn worker_diff(tree: &Path, worker: &Worker) -> Result<String, String> {
 /// clone, without the hidden test files (they judge the task; the lesson is
 /// about the code).
 pub fn fix_diff(work: &Work, task: &Task) -> Result<String, String> {
+    diff_of_fix(work, task, &["--no-color"])
+}
+
+/// The files the verified fix changed, repository-relative, without the
+/// hidden test files: what a lesson from it is about, and so where it is
+/// filed.
+pub fn fix_paths(work: &Work, task: &Task) -> Result<Vec<String>, String> {
+    Ok(diff_of_fix(work, task, &["--name-only", "-z"])?
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect())
+}
+
+/// `git diff <options> base..reference`, the hidden tests left out.
+fn diff_of_fix(work: &Work, task: &Task, options: &[&str]) -> Result<String, String> {
     let clone = work.clone_of(&task.source)?;
-    let range = format!("{}..{}", task.base, task.reference);
-    let mut args = vec![
-        "diff".to_string(),
-        "--no-color".to_string(),
-        range,
-        "--".to_string(),
-        ".".to_string(),
-    ];
+    let mut args: Vec<String> = std::iter::once("diff")
+        .chain(options.iter().copied())
+        .map(String::from)
+        .collect();
+    args.push(format!("{}..{}", task.base, task.reference));
+    args.push("--".to_string());
+    args.push(".".to_string());
     args.extend(task.hidden_tests.iter().map(|t| format!(":(exclude){t}")));
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     git(&clone, &args)
@@ -855,6 +870,11 @@ mod tests {
         assert!(
             !fix.contains("sum.test.ts"),
             "the hidden test leaked into the fix: {fix}"
+        );
+        assert_eq!(
+            fix_paths(&work, &task).expect("paths"),
+            ["sum.ts"],
+            "the files the fix changed, the hidden test left out"
         );
     }
 }

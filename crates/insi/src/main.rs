@@ -248,13 +248,16 @@ fn hook_cmd(flags: &Flags, work: &Work) {
         .as_str()
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    let topic = repo
-        .as_deref()
-        .and_then(|r| Config::load(r).ok())
-        .and_then(|c| c.topic)
-        .unwrap_or_else(|| "task".to_string());
+    let config = match repo.as_deref().map(Config::load) {
+        Some(Ok(config)) => config,
+        Some(Err(e)) => {
+            eprintln!("insi hook: {e}");
+            return;
+        }
+        None => Config::default(),
+    };
     let lessons = lessons_file(flags, work);
-    match hook::respond(&event, &|| lessons.all(), &topic, &work.root) {
+    match hook::respond(&event, &|| lessons.all(), config.topics("task"), &work.root) {
         Ok(Some(answer)) => println!("{answer}"),
         Ok(None) => {}
         Err(why) => eprintln!("insi hook: {why} ({})", lessons.path.display()),
@@ -552,6 +555,7 @@ fn learn_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
     // use: a lesson from a measured task would brief the measured tasks
     // after it, and the comparison would be learning on its own test set.
     let tasks = selected(flags, &store)?;
+    let config = repo_config()?.1;
     learn::learn(&learn::Learn {
         work,
         tasks: &tasks,
@@ -559,6 +563,7 @@ fn learn_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
         lessons: &lessons_file(flags, work),
         worker: &worker(flags)?,
         topic: &topic,
+        topic_rules: &config.topic_rules,
         jobs: jobs(flags)?,
         to_memory: if flags.has("to-memory") {
             Some(insi_memory::incord::address()?)

@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use insi_core::topic::{TopicRule, Topics};
 use insi_core::{EvalResult, Lesson, Task, Verification, Worker};
 use insi_eval::run::{self, Work, CHECK_OUTPUT, WORKER_DIFF};
 use insi_eval::{pool, process, report, store};
@@ -24,7 +25,11 @@ pub struct Learn<'a> {
     pub results: &'a Path,
     pub lessons: &'a FileLessons,
     pub worker: &'a Worker,
+    /// The repository's topic for a task.
     pub topic: &'a (dyn Fn(&Task) -> String + Sync),
+    /// Narrower topics: a lesson is filed on the narrowest one covering
+    /// every file its fix changed.
+    pub topic_rules: &'a [TopicRule],
     pub jobs: usize,
     /// Also write each lesson to the Incord Memory engine at this address,
     /// filed under the repository it came from. `None` keeps lessons in the
@@ -146,9 +151,14 @@ fn write_one(l: &Learn, task: &Task, r: &EvalResult) -> Result<Lesson, String> {
     let answer = writer::final_answer(&ran.stdout)
         .ok_or_else(|| "the lesson writer answered nothing".to_string())?;
     let draft = writer::parse(&answer)?;
+    let base = (l.topic)(task);
+    let topics = Topics {
+        base: &base,
+        rules: l.topic_rules,
+    };
     Ok(Lesson {
         id,
-        topic: (l.topic)(task),
+        topic: topics.for_paths(&run::fix_paths(l.work, task)?),
         issue: draft.issue,
         root_cause: draft.root_cause,
         use_: draft.use_,

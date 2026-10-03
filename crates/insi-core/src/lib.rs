@@ -13,6 +13,7 @@ pub mod lock;
 pub mod secrets;
 pub mod signature;
 pub mod task;
+pub mod topic;
 
 pub use config::{Config, Price, Worker};
 pub use lesson::{Lesson, Verification};

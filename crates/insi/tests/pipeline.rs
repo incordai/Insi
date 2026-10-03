@@ -187,12 +187,15 @@ fn the_whole_pipeline_runs_and_a_lesson_changes_a_later_result() {
     let work = temp("work");
     let cwd = temp("cwd");
     // The repository's config, read by `mine` from the folder it runs in:
-    // setup fills `vendor/`, reusable while `deps.lock` is unchanged.
+    // setup fills `vendor/`, reusable while `deps.lock` is unchanged. The
+    // topic rule names a folder no fix touches, so every lesson stays on the
+    // repository's topic and reaches the briefing.
     std::fs::create_dir_all(cwd.join(".insi")).expect("config dir");
     std::fs::write(
         cwd.join(".insi/config.toml"),
         "setup = [\"git\", \"init\", \"-q\", \"vendor\"]\n\
-         [setup_cache]\nkey = [\"deps.lock\"]\nkeep = [\"vendor\"]\n",
+         [setup_cache]\nkey = [\"deps.lock\"]\nkeep = [\"vendor\"]\n\
+         [[topic_rules]]\ntopic = \"shop/notes\"\npaths = [\"notes\"]\n",
     )
     .expect("config");
     let results_file = work.join("results.jsonl");
@@ -290,6 +293,15 @@ fn the_whole_pipeline_runs_and_a_lesson_changes_a_later_result() {
     // LEARN from the older half only.
     let learned = insi.run(&["learn", "--half", "older", "--worker", &writer]);
     assert!(learned.contains("2 lesson(s) written"), "{learned}");
+    let topics: Vec<String> = results(&work.join("lessons.jsonl"))
+        .iter()
+        .map(|l| l["topic"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        topics,
+        ["shop", "shop"],
+        "filed by the files each fix changed"
+    );
 
     // MEASURE the newer half: off, then on.
     insi.run(&[
