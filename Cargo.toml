@@ -18,8 +18,10 @@ repository = "https://github.com/incordai/insi"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
-insi-core = { path = "crates/insi-core" }
-insi-eval = { path = "crates/insi-eval" }
-insi-memory = { path = "crates/insi-memory" }
-insi-loop = { path = "crates/insi-loop" }
-insi-connectors = { path = "crates/insi-connectors" }
+# Versions as well as paths, so each crate can be published: crates.io
+# resolves by version, the workspace by path.
+insi-core = { path = "crates/insi-core", version = "0.1.0" }
+insi-eval = { path = "crates/insi-eval", version = "0.1.0" }
+insi-memory = { path = "crates/insi-memory", version = "0.1.0" }
+insi-loop = { path = "crates/insi-loop", version = "0.1.0" }
+insi-connectors = { path = "crates/insi-connectors", version = "0.1.0" }

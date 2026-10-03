@@ -1,0 +1,28 @@
+{
+  "name": "insi",
+  "version": "0.1.0",
+  "description": "Insi: self-improving coding agents, governed by humans. Installs the insi binary for this platform.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/incordai/insi.git"
+  },
+  "bin": {
+    "insi": "bin/insi.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "node test.js"
+  },
+  "files": [
+    "bin/insi.js",
+    "install.js",
+    "platform.js",
+    "checksums.json"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["linux", "darwin", "win32"],
+  "cpu": ["x64", "arm64"]
+}

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insi"
+version = "0.1.0"
+description = "Insi: self-improving coding agents, governed by humans. Runs the insi binary for this platform."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/incordai/insi"
+
+[project.scripts]
+insi = "insi_cli:main"
+
+[tool.setuptools]
+packages = ["insi_cli"]
+package-dir = { "" = "src" }
+
+[tool.setuptools.package-data]
+insi_cli = ["checksums.json"]

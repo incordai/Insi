@@ -4,3 +4,13 @@
 # Where `insi eval` keeps its clone, worktrees and results by default.
 /.insi-work/
 .backups/
+# Packaging: the binary the npm wrapper installs, the digests a release
+# writes into each wrapper (RELEASING.md), Python's and pip's build output.
+/packaging/npm/bin/insi
+/packaging/npm/bin/insi.exe
+/packaging/npm/checksums.json
+/packaging/pip/src/insi_cli/checksums.json
+__pycache__/
+/packaging/pip/dist/
+/packaging/pip/build/
+*.egg-info/

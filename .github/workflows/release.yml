@@ -1,0 +1,96 @@
+# On a version tag (v0.1.0): build insi for each platform the npm and pip
+# wrappers know, and draft a GitHub release holding the archives and
+# checksums.json. Nothing is published to a registry here, and the release
+# stays a draft until a person publishes it: see RELEASING.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: the tag matches every manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          npm=$(node -p "require('./packaging/npm/package.json').version")
+          pip=$(sed -n 's/^version = "\(.*\)"/\1/p' packaging/pip/pyproject.toml | head -1)
+          py=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' packaging/pip/src/insi_cli/__init__.py)
+          echo "tag $tag, cargo $cargo, npm $npm, pip $pip, insi_cli $py"
+          for v in "$cargo" "$npm" "$pip" "$py"; do
+            [ "$v" = "$tag" ] || { echo "version $v does not match the tag $tag"; exit 1; }
+          done
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: versions
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, bin: insi }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, bin: insi }
+          - { os: macos-latest, target: aarch64-apple-darwin, bin: insi }
+          - { os: macos-latest, target: x86_64-apple-darwin, bin: insi }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, bin: insi.exe }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked -p insi --target ${{ matrix.target }}
+      - name: archive
+        shell: bash
+        run: |
+          name="insi-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          tar -czf "$name" -C "target/${{ matrix.target }}/release" "${{ matrix.bin }}"
+          echo "ARCHIVE=$name" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    name: draft the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums.json
+        run: |
+          cd dist
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          sums = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in sorted(pathlib.Path(".").glob("insi-*.tar.gz"))}
+          if len(sums) != 5:
+              raise SystemExit(f"expected 5 archives, found {len(sums)}")
+          pathlib.Path("checksums.json").write_text(json.dumps(sums, indent=2) + "\n")
+          print(json.dumps(sums, indent=2))
+          PY
+      - name: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "insi $GITHUB_REF_NAME" \
+            --notes "Archives for each platform and checksums.json (SHA-256). Copy checksums.json into the npm and pip packages before publishing them (RELEASING.md)."
