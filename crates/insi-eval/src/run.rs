@@ -455,25 +455,58 @@ fn run_in(
     result: &mut EvalResult,
 ) -> Result<(), String> {
     let task = a.task;
+    // The setup output this attempt may reuse, and later return: its key is
+    // read at the attempt's commit, before anything changes the tree.
+    let reusable = task
+        .setup_cache
+        .as_ref()
+        .and_then(|cache| crate::deps::key(cache, &task.setup, tree).map(|key| (cache, key)));
     if !task.setup.is_empty() {
-        // Waiting for a slot is its own phase, so it is never read as setup.
-        let slot = timed(result, "queue", || work.disk.take());
-        let setup = timed(result, "setup", || {
-            process::run(&task.setup, tree, Duration::from_secs(SETUP_SECS))
-        })?;
-        drop(slot);
-        if !setup.success() {
-            return Err(format!(
-                "setup failed ({}): {}",
-                if setup.timed_out {
-                    "timed out".to_string()
-                } else {
-                    format!("exit {:?}", setup.code)
-                },
-                last_lines(&setup.tail(), 6)
-            ));
+        let reused = match &reusable {
+            Some((cache, key)) => timed(result, "reuse", || {
+                crate::deps::take(&work.root, cache, key, tree)
+            }),
+            None => false,
+        };
+        if !reused {
+            // Waiting for a slot is its own phase, so it is never read as
+            // setup.
+            let slot = timed(result, "queue", || work.disk.take());
+            let setup = timed(result, "setup", || {
+                process::run(&task.setup, tree, Duration::from_secs(SETUP_SECS))
+            })?;
+            drop(slot);
+            if !setup.success() {
+                return Err(format!(
+                    "setup failed ({}): {}",
+                    if setup.timed_out {
+                        "timed out".to_string()
+                    } else {
+                        format!("exit {:?}", setup.code)
+                    },
+                    last_lines(&setup.tail(), 6)
+                ));
+            }
         }
     }
+    let outcome = work_and_check(tree, artifacts, store, a, result);
+    // Returned whether the attempt passed, failed or errored: what setup
+    // made is unchanged unless the key files changed, and then it stays.
+    if let Some((cache, key)) = &reusable {
+        crate::deps::give_back(&work.root, cache, &task.setup, key, tree);
+    }
+    outcome
+}
+
+/// The worker (for a worker attempt), then the hidden check.
+fn work_and_check(
+    tree: &Path,
+    artifacts: &Path,
+    store: &Store,
+    a: &Attempt,
+    result: &mut EvalResult,
+) -> Result<(), String> {
+    let task = a.task;
     if a.kind == Kind::Worker {
         // What the hidden tests import that the base lacks: their names and
         // paths only, read before any of them is copied in.
@@ -734,6 +767,7 @@ mod tests {
                 "sum.test.ts".into(),
             ],
             setup: vec![],
+            setup_cache: None,
             budget: insi_core::Budget {
                 wall_secs: 60,
                 tokens: None,

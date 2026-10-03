@@ -35,7 +35,44 @@ pub struct Task {
     /// dependencies), as argv; empty for none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
+    /// What setup produces that a later attempt may reuse instead of running
+    /// setup again; `None` runs setup every time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_cache: Option<SetupCache>,
     pub budget: Budget,
+}
+
+/// Setup output reused between attempts: `keep` folders (`node_modules`),
+/// valid for as long as the `key` files (the lockfile) are unchanged.
+///
+/// Measured on Watchman: `npm ci` was 4 to 5.5 minutes of every 13 to 20
+/// minute attempt, installing the same lockfile each time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetupCache {
+    /// Repo-relative files whose contents decide whether the kept output is
+    /// still right, e.g. `package-lock.json`.
+    pub key: Vec<String>,
+    /// Repo-relative folders setup produces, e.g. `node_modules`.
+    pub keep: Vec<String>,
+}
+
+impl SetupCache {
+    /// Refused when a path could reach outside the worktree: these folders
+    /// are moved, and a path out of the tree would move something else.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.key.is_empty() || self.keep.is_empty() {
+            return Err("setup_cache needs at least one key file and one kept folder".into());
+        }
+        for path in self.key.iter().chain(&self.keep) {
+            if !is_safe_relative(path) {
+                return Err(format!(
+                    "setup_cache path \"{path}\" is not a plain repo-relative path"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// What one attempt may spend. The same for every attempt at a task, so a
@@ -86,6 +123,11 @@ impl Task {
         }
         if self.check.is_empty() {
             return Err(format!("task {} has no check command", self.id));
+        }
+        if let Some(cache) = &self.setup_cache {
+            cache
+                .validate()
+                .map_err(|e| format!("task {}: {e}", self.id))?;
         }
         Ok(())
     }
@@ -194,6 +236,7 @@ mod tests {
             hidden_tests: vec!["src/a.test.ts".into(), "src/b.test.ts".into()],
             check: vec!["npx".into(), "vitest".into(), "run".into(), TESTS.into()],
             setup: vec![],
+            setup_cache: None,
             budget: Budget {
                 wall_secs: 600,
                 tokens: None,

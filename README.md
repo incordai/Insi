@@ -28,7 +28,19 @@ topic = "shop"
 check = ["npx", "vitest", "run", "{tests}"]
 setup = ["npm", "ci"]
 private_checks = "../insi-private/shop"
+
+[setup_cache]
+key = ["package-lock.json"]
+keep = ["node_modules"]
 ```
+
+`[setup_cache]` lets attempts reuse what setup made instead of making it
+again: after an attempt, `node_modules` is moved (renamed, not copied) into
+`<work>/deps/<key>/`, and the next attempt whose setup command and lockfile
+match moves it back in and skips setup. A worker that changed the lockfile
+keeps its folder out of the cache. On Watchman, `npm ci` was 4 to 5.5
+minutes of every attempt. Written for a Node project with a lockfile; a
+`--setup` given by hand gets none, since it may make something else.
 
 Every key can be edited; `--check` and `--setup` replace what was detected,
 and an existing config is never overwritten without `--force`. With a

@@ -31,6 +31,11 @@ pub struct Config {
     /// dependencies), as argv.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
+    /// What setup produces that a later attempt may reuse while the key
+    /// files are unchanged (`node_modules` for `package-lock.json`). Mined
+    /// into every task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_cache: Option<crate::task::SetupCache>,
     /// The wall-clock seconds a worker gets per task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall_secs: Option<u64>,

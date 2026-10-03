@@ -436,6 +436,7 @@ fn mine_cmd(flags: &Flags) -> Result<(), String> {
         } else {
             config.setup.clone()
         },
+        setup_cache: config.setup_cache.clone(),
         wall_secs: flags.number("wall-secs", config.wall_secs.unwrap_or(1800))?,
         limit: flags.number("limit", 30)? as usize,
         id_prefix: flags
@@ -812,6 +813,7 @@ mod tests {
             hidden_tests: vec!["t.test.ts".into()],
             check: vec!["x".into()],
             setup: vec![],
+            setup_cache: None,
             budget: Budget {
                 wall_secs: 1,
                 tokens: None,

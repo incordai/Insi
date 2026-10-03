@@ -21,6 +21,9 @@ pub struct Detected {
     pub stack: String,
     pub setup: Vec<String>,
     pub check: Vec<String>,
+    /// What setup makes that attempts may reuse: `node_modules`, keyed on
+    /// the lockfile. `None` without a lockfile — nothing to key on.
+    pub setup_cache: Option<insi_core::task::SetupCache>,
 }
 
 fn argv(words: &[&str]) -> Vec<String> {
@@ -31,17 +34,37 @@ fn argv(words: &[&str]) -> Vec<String> {
 pub fn detect(repo: &Path) -> Option<Detected> {
     let has = |name: &str| repo.join(name).is_file();
     if has("package.json") {
-        let (manager, setup) = if has("pnpm-lock.yaml") {
-            ("pnpm", argv(&["pnpm", "install", "--frozen-lockfile"]))
+        let (manager, setup, lockfile) = if has("pnpm-lock.yaml") {
+            (
+                "pnpm",
+                argv(&["pnpm", "install", "--frozen-lockfile"]),
+                Some("pnpm-lock.yaml"),
+            )
         } else if has("yarn.lock") {
-            ("yarn", argv(&["yarn", "install", "--frozen-lockfile"]))
+            (
+                "yarn",
+                argv(&["yarn", "install", "--frozen-lockfile"]),
+                Some("yarn.lock"),
+            )
         } else if has("bun.lockb") || has("bun.lock") {
-            ("bun", argv(&["bun", "install", "--frozen-lockfile"]))
+            (
+                "bun",
+                argv(&["bun", "install", "--frozen-lockfile"]),
+                Some(if has("bun.lock") {
+                    "bun.lock"
+                } else {
+                    "bun.lockb"
+                }),
+            )
         } else if has("package-lock.json") {
-            ("npm", argv(&["npm", "ci"]))
+            ("npm", argv(&["npm", "ci"]), Some("package-lock.json"))
         } else {
-            ("npm", argv(&["npm", "install"]))
+            ("npm", argv(&["npm", "install"]), None)
         };
+        let setup_cache = lockfile.map(|lock| insi_core::task::SetupCache {
+            key: vec![lock.to_string()],
+            keep: vec!["node_modules".to_string()],
+        });
         let manifest = std::fs::read_to_string(repo.join("package.json")).unwrap_or_default();
         let (runner, check) = if manifest.contains("\"vitest\"") {
             ("vitest", argv(&["npx", "vitest", "run", "{tests}"]))
@@ -54,6 +77,7 @@ pub fn detect(repo: &Path) -> Option<Detected> {
             stack: format!("node ({manager}, {runner})"),
             setup,
             check,
+            setup_cache,
         });
     }
     if has("Cargo.toml") {
@@ -63,6 +87,7 @@ pub fn detect(repo: &Path) -> Option<Detected> {
             stack: "rust".to_string(),
             setup: Vec::new(),
             check: argv(&["cargo", "test"]),
+            setup_cache: None,
         });
     }
     if has("pyproject.toml") || has("requirements.txt") || has("setup.py") {
@@ -75,6 +100,7 @@ pub fn detect(repo: &Path) -> Option<Detected> {
             stack: "python".to_string(),
             setup,
             check: argv(&["python", "-m", "pytest", "{tests}"]),
+            setup_cache: None,
         });
     }
     if has("go.mod") {
@@ -82,6 +108,7 @@ pub fn detect(repo: &Path) -> Option<Detected> {
             stack: "go".to_string(),
             setup: argv(&["go", "mod", "download"]),
             check: argv(&["go", "test", "./..."]),
+            setup_cache: None,
         });
     }
     None
@@ -214,17 +241,21 @@ pub fn init(
     } else {
         check
     };
-    let setup = setup.unwrap_or_else(|| {
-        detected
+    // The detected cache belongs to the detected setup: a setup given by
+    // hand may produce something else, so it gets none.
+    let (setup, setup_cache) = match setup {
+        Some(given) => (given, None),
+        None => detected
             .as_ref()
-            .map(|d| d.setup.clone())
-            .unwrap_or_default()
-    });
+            .map(|d| (d.setup.clone(), d.setup_cache.clone()))
+            .unwrap_or_default(),
+    };
     let name = repo_name(repo);
     let config = Config {
         topic: Some(name.clone()),
         check,
         setup,
+        setup_cache,
         // Outside the checkout: a worker in this repository must not be able
         // to read the hidden tests.
         private_checks: Some(format!("../insi-private/{name}")),
@@ -306,6 +337,15 @@ mod tests {
         let d = detect(&node).expect("node");
         assert_eq!(d.setup, ["npm", "ci"]);
         assert_eq!(d.check, ["npx", "vitest", "run", "{tests}"]);
+        let cache = d.setup_cache.expect("a lockfile to key on");
+        assert_eq!(cache.key, ["package-lock.json"]);
+        assert_eq!(cache.keep, ["node_modules"]);
+        let no_lock = repo_with(&[("package.json", "{}")]);
+        assert_eq!(
+            detect(&no_lock).expect("node").setup_cache,
+            None,
+            "no lockfile, nothing to key on"
+        );
 
         let pnpm_jest = repo_with(&[
             ("package.json", r#"{"devDependencies":{"jest":"29"}}"#),
@@ -352,6 +392,10 @@ mod tests {
         assert_eq!(config, done.config);
         assert_eq!(config.topic.as_deref(), Some("shop"));
         assert_eq!(config.check, ["npx", "vitest", "run", "{tests}"]);
+        assert_eq!(
+            config.setup_cache.as_ref().map(|c| c.keep.clone()),
+            Some(vec!["node_modules".to_string()])
+        );
         assert_eq!(
             config.private_checks.as_deref(),
             Some("../insi-private/shop")

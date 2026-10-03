@@ -64,6 +64,10 @@ fn shop() -> PathBuf {
     std::fs::create_dir_all(repo.join("tests")).expect("tests");
     // `.ts`, not `.txt`: mining counts a `.txt` change as docs, not code.
     std::fs::write(repo.join("src/app.ts"), "// shop v1\n").expect("write");
+    // A lockfile and an ignored folder setup fills, like `package-lock.json`
+    // and `node_modules`.
+    std::fs::write(repo.join("deps.lock"), "v1\n").expect("write");
+    std::fs::write(repo.join(".gitignore"), "vendor/\n").expect("write");
     git(&repo, &["add", "."], None);
     git(
         &repo,
@@ -182,6 +186,15 @@ fn the_whole_pipeline_runs_and_a_lesson_changes_a_later_result() {
     let private = temp("private");
     let work = temp("work");
     let cwd = temp("cwd");
+    // The repository's config, read by `mine` from the folder it runs in:
+    // setup fills `vendor/`, reusable while `deps.lock` is unchanged.
+    std::fs::create_dir_all(cwd.join(".insi")).expect("config dir");
+    std::fs::write(
+        cwd.join(".insi/config.toml"),
+        "setup = [\"git\", \"init\", \"-q\", \"vendor\"]\n\
+         [setup_cache]\nkey = [\"deps.lock\"]\nkeep = [\"vendor\"]\n",
+    )
+    .expect("config");
     let results_file = work.join("results.jsonl");
     let lesson_ini = temp("lesson").join("lesson.ini");
     std::fs::write(
@@ -343,4 +356,20 @@ fn the_whole_pipeline_runs_and_a_lesson_changes_a_later_result() {
         report.contains("lessons=off,phase=measure: 0/2 passed"),
         "{report}"
     );
+
+    // SETUP RAN ONCE. Every attempt — controls and workers, fourteen in all —
+    // shares one lockfile, so the first installs and every later one reuses
+    // what it left instead of installing again.
+    let all = results(&results_file);
+    let ran_setup = all
+        .iter()
+        .filter(|r| r["phases"].get("setup").is_some())
+        .count();
+    let reused = all
+        .iter()
+        .filter(|r| r["phases"].get("reuse").is_some() && r["phases"].get("setup").is_none())
+        .count();
+    assert_eq!(all.len(), 14, "8 controls + 2 learning + 2 off + 2 on");
+    assert_eq!(ran_setup, 1, "setup ran more than once");
+    assert_eq!(reused, all.len() - 1);
 }

@@ -15,6 +15,7 @@
 //! Nothing here edits the source repository: tasks are read from its
 //! history, and every worktree lives in Insi's own clone.
 
+pub mod deps;
 pub mod git;
 pub mod interface;
 pub mod mine;

@@ -22,6 +22,8 @@ pub struct Options {
     pub check: Vec<String>,
     /// Run in a fresh worktree before anything else; empty for none.
     pub setup: Vec<String>,
+    /// What setup produces that attempts may reuse; `None` for none.
+    pub setup_cache: Option<insi_core::task::SetupCache>,
     pub wall_secs: u64,
     /// At most this many tasks, newest first.
     pub limit: usize,
@@ -167,6 +169,7 @@ pub fn mine(source: &Path, opts: &Options) -> Result<Vec<Mined>, String> {
                 hidden_tests: tests,
                 check: opts.check.clone(),
                 setup: opts.setup.clone(),
+                setup_cache: opts.setup_cache.clone(),
                 budget: Budget {
                     wall_secs: opts.wall_secs,
                     tokens: None,
@@ -276,6 +279,7 @@ mod tests {
                 "{tests}".into(),
             ],
             setup: vec![],
+            setup_cache: None,
             wall_secs: 600,
             limit: 10,
             id_prefix: "demo".into(),
