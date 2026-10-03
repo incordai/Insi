@@ -75,6 +75,35 @@ pub struct Config {
     /// this command instead of on this machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<Sandbox>,
+    /// Outside sources read for context (`insi context`), each a command
+    /// that prints items as JSON lines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connectors: Vec<CommandConnector>,
+}
+
+/// An outside source read by running a command that prints one JSON object
+/// per line: `{"title", "body", "url"?, "paths"?, "topic"?}`. The command
+/// holds whatever login it needs; Insi holds none.
+///
+/// ```toml
+/// [[connectors]]
+/// name = "errors"
+/// command = ["sentry-export", "--project", "shop", "--json-lines"]
+/// trust = "untrusted"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandConnector {
+    pub name: String,
+    pub command: Vec<String>,
+    /// How far its items are believed; untrusted unless said otherwise —
+    /// an outside source's text is anyone's until shown to be otherwise.
+    #[serde(default = "untrusted")]
+    pub trust: crate::Trust,
+}
+
+fn untrusted() -> crate::Trust {
+    crate::Trust::Untrusted
 }
 
 /// What a sandbox command must contain: where the work's folder goes.
@@ -279,6 +308,18 @@ impl Config {
         if let Some(why) = config.sandbox.as_ref().and_then(Sandbox::problem) {
             return Err(why);
         }
+        let mut sources = std::collections::BTreeSet::new();
+        for c in &config.connectors {
+            if c.name.trim().is_empty() || c.command.first().is_none_or(|p| p.trim().is_empty()) {
+                return Err("a connector needs a name and a command".to_string());
+            }
+            if matches!(c.name.as_str(), "docs" | "ci") || !sources.insert(c.name.as_str()) {
+                return Err(format!(
+                    "connector \"{}\" is named twice (docs and ci are built in)",
+                    c.name
+                ));
+            }
+        }
         let mut names = std::collections::BTreeSet::new();
         for s in &config.strategies {
             if s.name.trim().is_empty() || s.prompt.trim().is_empty() {
@@ -354,6 +395,24 @@ mod tests {
 
         let why = Config::parse("tset_cmd = [\"x\"]").expect_err("misspelt");
         assert!(why.contains("tset_cmd"), "{why}");
+    }
+
+    /// **A CONNECTOR'S ITEMS ARE UNTRUSTED UNLESS THE CONFIG SAYS OTHERWISE.**
+    #[test]
+    fn connectors_default_to_untrusted_and_need_a_unique_name() {
+        let config = Config::parse(
+            "[[connectors]]\nname = \"errors\"\ncommand = [\"export\"]\n\
+             [[connectors]]\nname = \"wiki\"\ncommand = [\"wiki\"]\ntrust = \"trusted\"\n",
+        )
+        .expect("valid");
+        assert_eq!(config.connectors[0].trust, crate::Trust::Untrusted);
+        assert_eq!(config.connectors[1].trust, crate::Trust::Trusted);
+        assert!(Config::parse("[[connectors]]\nname = \"docs\"\ncommand = [\"x\"]").is_err());
+        assert!(Config::parse("[[connectors]]\nname = \"e\"\ncommand = []").is_err());
+        assert!(Config::parse(
+            "[[connectors]]\nname = \"e\"\ncommand = [\"x\"]\n[[connectors]]\nname = \"e\"\ncommand = [\"y\"]"
+        )
+        .is_err());
     }
 
     /// **A SANDBOX HOLDS THE WORK'S FOLDER, OR IS REFUSED.** The step's

@@ -236,6 +236,38 @@ Anything it cannot read is no answer and exit 0, with the reason on stderr.
 `insi init` writes it into a missing `.claude/settings.json`; an existing one
 is left alone and init prints the block to merge in.
 
+## Outside context: `insi context`
+
+```sh
+insi context --topic shop/api --query "refund rounding"
+```
+
+What the repository's outside sources say about one part of it, for an agent
+or a person. The MCP tool `insi_context` answers the same. Every item says
+where it came from, how far it is trusted, and its topic. Only items on the
+asked topic's line of descent come back, ordered by the words asked for,
+bounded in number and length.
+
+| Source | Trust | What |
+| --- | --- | --- |
+| `docs` | trusted | `README.md` and `docs/**/*.md`, one item per section, each on its file's topic |
+| `ci` | internal | the last failed GitHub Actions runs through `gh`, the end of their failed steps' log, on the topic of the repository files the log names (`--no-ci` leaves them out) |
+| `[[connectors]]` | untrusted unless set | any command that prints items as JSON lines: an error tracker's export, a mailbox's |
+
+```toml
+[[connectors]]
+name = "errors"
+command = ["sentry-export", "--project", "shop", "--json-lines"]   # {"title", "body", "url"?, "paths"?, "topic"?} per line
+trust = "untrusted"
+```
+
+The command holds whatever login it needs; Insi holds none and only reads
+what it prints. A source that fails is named under "Not read" and the others
+still answer. Untrusted text is shown inside a fence it cannot close from
+within, marked as data: an email that says "ignore your rules" is something
+to read, not something to do. Outside context is not put in `insi eval`'s
+briefings, so a measurement depends only on its tasks.
+
 ## Topics: which lessons apply where
 
 A lesson is filed on a topic, a `/`-separated path broadest first

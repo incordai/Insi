@@ -21,9 +21,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn temp(name: &str) -> PathBuf {
+    // A counter as well as the time: the tests run in parallel, and two
+    // asking for the same name within one clock tick would share a folder.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "insi-pipeline-{}-{}-{name}",
+        "insi-pipeline-{}-{}-{}-{name}",
         std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())

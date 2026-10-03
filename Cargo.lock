@@ -28,10 +28,21 @@ dependencies = [
 name = "insi"
 version = "0.1.0"
 dependencies = [
+ "insi-connectors",
  "insi-core",
  "insi-eval",
  "insi-loop",
  "insi-memory",
+ "serde_json",
+]
+
+[[package]]
+name = "insi-connectors"
+version = "0.1.0"
+dependencies = [
+ "insi-core",
+ "insi-eval",
+ "serde",
  "serde_json",
 ]
 

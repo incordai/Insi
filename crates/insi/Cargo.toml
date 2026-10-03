@@ -15,4 +15,5 @@ insi-core.workspace = true
 insi-eval.workspace = true
 insi-memory.workspace = true
 insi-loop.workspace = true
+insi-connectors.workspace = true
 serde_json.workspace = true

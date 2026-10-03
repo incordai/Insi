@@ -1,0 +1,13 @@
+[package]
+name = "insi-connectors"
+description = "Insi's outside sources: docs, CI logs and command connectors, each item with its source, trust and topic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+insi-core.workspace = true
+insi-eval.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -47,7 +47,7 @@ fn says_what_failed(line: &str) -> bool {
 
 /// Remove terminal escape sequences (`ESC [ … letter`, and a lone `ESC x`),
 /// which colour a runner's output and differ by terminal, not by mistake.
-fn strip_ansi(text: &str) -> String {
+pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

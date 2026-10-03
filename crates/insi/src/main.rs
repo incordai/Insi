@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod context;
 mod hook;
 mod improve;
 mod init;
@@ -60,7 +61,9 @@ const USAGE: &str = "usage:
   insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
                 (the interface each task's worker is told: what its hidden tests import
                 that the base lacks)
-  insi mcp      [--lessons <file>]      (MCP on stdio: insi_briefing, insi_lessons_for_error)
+  insi mcp      [--lessons <file>]      (MCP on stdio: insi_briefing, insi_lessons_for_error, insi_context)
+  insi context  [--repo <dir>] [--topic t] [--query \"words\"] [--limit N] [--no-ci]
+                (the repository's docs, failed CI runs and [[connectors]] for a topic, with trust)
   insi hook     [--lessons <file>]      (Claude Code hook: lessons before an edit, after a failure)
   insi issue    --number N [--repo <dir>] [--worker \"<cmd {prompt}>\"] [--lessons <file>] [--ready]
                 (work a GitHub issue labelled trusted_issue_label; a draft PR if test_cmd passes)
@@ -180,8 +183,28 @@ fn command_by_name(
         "mcp" => {
             // stdout is the protocol from here on: nothing else may print.
             let lessons = lessons_file(flags, work);
-            mcp::serve(&|| lessons.all())
+            let repo = std::env::current_dir().map_err(|e| e.to_string())?;
+            // Read on each call, as the lessons are: a config edited while
+            // the server runs is seen, and one that does not read fails that
+            // call, not the server.
+            mcp::serve(&|| lessons.all(), &|topic, words| {
+                let config = Config::load(&repo)?;
+                let base = config
+                    .topic
+                    .clone()
+                    .unwrap_or_else(|| repo_folder_name(&repo));
+                Ok(context::text(&context::Ask {
+                    repo: &repo,
+                    config: &config,
+                    base: &base,
+                    topic: Some(topic),
+                    words,
+                    limit: context::LIMIT,
+                    with_ci: true,
+                }))
+            })
         }
+        "context" => context_cmd(flags),
         "hook" => {
             hook_cmd(flags, work);
             Ok(())
@@ -431,6 +454,34 @@ fn issue_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
             println!("kept on {branch}, nothing pushed: {why}")
         }
     }
+    Ok(())
+}
+
+/// The repository's outside sources for a topic, printed.
+fn context_cmd(flags: &Flags) -> Result<(), String> {
+    let repo = std::path::absolute(flags.get("repo").unwrap_or("."))
+        .map_err(|e| format!("--repo: {e}"))?;
+    let config = Config::load(&repo)?;
+    let base = config
+        .topic
+        .clone()
+        .unwrap_or_else(|| repo_folder_name(&repo));
+    let words: Vec<String> = flags
+        .get("query")
+        .map(|q| q.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+    print!(
+        "{}",
+        context::text(&context::Ask {
+            repo: &repo,
+            config: &config,
+            base: &base,
+            topic: flags.get("topic"),
+            words: &words,
+            limit: flags.number("limit", context::LIMIT as u64)? as usize,
+            with_ci: !flags.has("no-ci"),
+        })
+    );
     Ok(())
 }
 
