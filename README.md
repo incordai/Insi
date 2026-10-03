@@ -276,6 +276,14 @@ says it is better:
    by `--margin` (a tie never wins) and is not worse on the newer half,
    which is never used to select (`--holdout-margin` to demand more).
 
+Each attempt also runs with `INSI_HARNESS` set to that harness's own
+snapshot folder, so the worker can read the rest of it. incode does:
+`instructions.md` joins its system context, `roles.json`
+(`{"roles": …, "tiers": …}`) routes its models over `admin.json` for that run
+only, and `agents/*.md` are sub-agents between the project's and yours. A
+harness file incode cannot read refuses the run instead of running on the
+defaults.
+
 Everything lands under `<work>/loop/`: every harness scored
 (`harnesses/<id>/`, named by content, so a harness is never run twice on
 the same task and seed), every attempt (`results.jsonl`), every state change
