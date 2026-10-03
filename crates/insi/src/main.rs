@@ -9,7 +9,7 @@
 //!               [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
 //!               [--results <file>] [--keep] [--jobs N] [--max-dollars D]
 //! insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"] [--to-memory]
-//!               [--results <file>] [--jobs N]
+//!               [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
 //! insi report   [--results <file>]
 //! insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
 //! insi mcp      [--lessons <file>]
@@ -51,7 +51,7 @@ const USAGE: &str = "usage:
                 (D: stop starting attempts once they cost D US dollars, by
                 [prices] in .insi/config.toml)
   insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"] [--to-memory]
-                [--results <file>] [--jobs N]
+                [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
   insi report   [--results <file>]
   insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
                 (the interface each task's worker is told: what its hidden tests import
@@ -532,7 +532,10 @@ fn topic(task: &Task) -> String {
 
 fn learn_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
     let store = store(flags)?;
-    let tasks = store.load()?;
+    // `--half older` learns only from the half the measurement does not
+    // use: a lesson from a measured task would brief the measured tasks
+    // after it, and the comparison would be learning on its own test set.
+    let tasks = selected(flags, &store)?;
     learn::learn(&learn::Learn {
         work,
         tasks: &tasks,
