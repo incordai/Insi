@@ -74,6 +74,23 @@ and the check runs. A failure's output is reduced to a signature (paths,
 hashes and numbers normalised), so the same mistake made twice is counted as
 a repeat.
 
+The worker's prompt is the fix commit's message, plus two things a real
+issue would say:
+
+- **The interface the check needs.** Hidden tests often import a module the
+  fix created or a function it exported — names the commit message never
+  mentions, and no worker can guess. The prompt lists the module paths and
+  exported names the hidden tests import that do not exist at the base;
+  never a test, an assertion or an expected value. On the Watchman
+  benchmark 20 of 38 tasks needed this; without it every pilot attempt
+  failed on a missing name. `insi brief` prints what each task's worker is
+  told, read from the base with `git show`.
+- **That nobody will answer.** A worker that asked a question waited out
+  its whole budget for a reply; the prompt now says to decide, make the
+  change and stop.
+
+The full prompt is kept with the attempt as `prompt.txt`.
+
 ## Lessons
 
 Each worker attempt keeps what it left behind under `<work>/attempts/<name>/`:

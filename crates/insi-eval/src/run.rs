@@ -412,9 +412,17 @@ fn attempt_name(a: &Attempt) -> String {
 
 /// What an attempt leaves for a lesson to be written from. Files in its
 /// artifacts folder:
+pub const WORKER_PROMPT: &str = "prompt.txt";
 pub const WORKER_DIFF: &str = "worker.diff";
 pub const WORKER_OUTPUT: &str = "worker.out";
 pub const CHECK_OUTPUT: &str = "check.out";
+
+/// The last line of every worker's prompt. Measured on the first pilot: a
+/// worker that asked a question then waited out its whole budget for an
+/// answer nobody sends, and left its scratch scripts in the tree.
+pub const ALONE: &str = "You are working alone in this checkout and nobody will answer \
+                         questions: decide, make the change here, leave no scratch files \
+                         behind, and stop when it is done.";
 
 /// The most of any one artifact that is kept: a worker can write a diff of
 /// any size, and what a lesson is written from is read in far less.
@@ -467,11 +475,26 @@ fn run_in(
         }
     }
     if a.kind == Kind::Worker {
-        let prompt = if a.preface.is_empty() {
-            task.prompt.clone()
-        } else {
-            format!("{}\n\n{}", a.preface, task.prompt)
-        };
+        // What the hidden tests import that the base lacks: their names and
+        // paths only, read before any of them is copied in.
+        let tests = task
+            .hidden_tests
+            .iter()
+            .map(|p| {
+                let bytes = store.hidden(task, p)?;
+                Ok((p.clone(), String::from_utf8_lossy(&bytes).into_owned()))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let needed = crate::interface::brief(&crate::interface::needs(
+            &tests,
+            &crate::interface::in_tree(tree),
+        ));
+        let prompt = [a.preface, task.prompt.as_str(), needed.as_str(), ALONE]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        keep(artifacts, WORKER_PROMPT, &prompt)?;
         let argv = a.worker.render(&prompt)?;
         let ran = timed(result, "worker", || {
             process::run(&argv, tree, Duration::from_secs(task.budget.wall_secs))

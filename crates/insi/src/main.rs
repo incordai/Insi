@@ -11,6 +11,7 @@
 //! insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"] [--to-memory]
 //!               [--results <file>] [--jobs N]
 //! insi report   [--results <file>]
+//! insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
 //! insi mcp      [--lessons <file>]
 //! insi hook     [--lessons <file>]   (a Claude Code PreToolUse/PostToolUse hook)
 //! insi issue    --number N [--repo <dir>] [--worker "<cmd {prompt}>"] [--lessons <file>] [--ready]
@@ -52,6 +53,9 @@ const USAGE: &str = "usage:
   insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"] [--to-memory]
                 [--results <file>] [--jobs N]
   insi report   [--results <file>]
+  insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
+                (the interface each task's worker is told: what its hidden tests import
+                that the base lacks)
   insi mcp      [--lessons <file>]      (MCP on stdio: insi_briefing, insi_lessons_for_error)
   insi hook     [--lessons <file>]      (Claude Code hook: lessons before an edit, after a failure)
   insi issue    --number N [--repo <dir>] [--worker \"<cmd {prompt}>\"] [--lessons <file>] [--ready]
@@ -173,6 +177,7 @@ fn command_by_name(
             Ok(())
         }
         "report" => report_cmd(results),
+        "brief" => brief_cmd(flags),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -183,6 +188,42 @@ fn command_by_name(
         }
         other => Err(format!("no command \"{other}\"\n\n{USAGE}")),
     }
+}
+
+/// For each selected task, the interface its worker will be told: what the
+/// hidden tests import that the base lacks. Read from the task's source
+/// repository with `git show <base>:<path>`, which reads and never writes,
+/// so a task can be checked before half an hour is spent on it.
+fn brief_cmd(flags: &Flags) -> Result<(), String> {
+    let store = store(flags)?;
+    for task in selected(flags, &store)? {
+        let tests = task
+            .hidden_tests
+            .iter()
+            .map(|p| {
+                let bytes = store.hidden(&task, p)?;
+                Ok((p.clone(), String::from_utf8_lossy(&bytes).into_owned()))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let source = PathBuf::from(&task.source);
+        let at_base = |path: &str| {
+            insi_eval::git::git(&source, &["show", &format!("{}:{path}", task.base)]).ok()
+        };
+        let text = insi_eval::interface::brief(&insi_eval::interface::needs(&tests, &at_base));
+        println!(
+            "{}\n{}\n",
+            task.id,
+            if text.is_empty() {
+                "  nothing missing: the tests use what the base already has".to_string()
+            } else {
+                text.lines()
+                    .map(|l| format!("  {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        );
+    }
+    Ok(())
 }
 
 /// One Claude Code hook event from stdin; the answer, if any, on stdout.
