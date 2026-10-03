@@ -38,6 +38,16 @@ impl Outcome {
 /// Run `argv` in `dir`, stopping it — and everything it started — at
 /// `timeout`.
 pub fn run(argv: &[String], dir: &Path, timeout: Duration) -> Result<Outcome, String> {
+    run_with(argv, dir, timeout, &[])
+}
+
+/// [`run`], with `env` added to the environment the command inherits.
+pub fn run_with(
+    argv: &[String],
+    dir: &Path,
+    timeout: Duration,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Outcome, String> {
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| "an empty command".to_string())?;
@@ -45,6 +55,7 @@ pub fn run(argv: &[String], dir: &Path, timeout: Duration) -> Result<Outcome, St
     let mut command = Command::new(&program);
     command
         .args(args)
+        .envs(env.iter().copied())
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -171,6 +182,27 @@ mod tests {
         .expect("git runs");
         assert!(out.success(), "{out:?}");
         assert!(out.stdout.contains("git version"), "{}", out.stdout);
+    }
+
+    #[test]
+    fn the_environment_given_reaches_the_command() {
+        let out = run_with(
+            &[
+                "git".into(),
+                "config".into(),
+                "--get".into(),
+                "insi.probe".into(),
+            ],
+            &here(),
+            Duration::from_secs(30),
+            &[
+                ("GIT_CONFIG_COUNT", "1".as_ref()),
+                ("GIT_CONFIG_KEY_0", "insi.probe".as_ref()),
+                ("GIT_CONFIG_VALUE_0", "reached".as_ref()),
+            ],
+        )
+        .expect("git runs");
+        assert_eq!(out.stdout.trim(), "reached", "{out:?}");
     }
 
     #[test]

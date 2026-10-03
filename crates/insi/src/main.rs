@@ -609,6 +609,7 @@ fn validate_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String
                     briefed: vec![],
                     tags: vec![],
                     keep: flags.has("keep"),
+                    harness: None,
                 },
             )
         },
@@ -701,6 +702,7 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
                     briefed: brief.lesson_ids,
                     tags: tags.clone(),
                     keep: flags.has("keep"),
+                    harness: None,
                 },
             )
         },

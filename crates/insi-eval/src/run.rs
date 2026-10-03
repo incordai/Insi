@@ -319,7 +319,13 @@ pub struct Attempt<'a> {
     pub tags: Vec<String>,
     /// Leave the worktree on disk afterwards, to look at what happened.
     pub keep: bool,
+    /// The harness folder the worker runs with, told to it as
+    /// [`HARNESS_ENV`]; `None` for the worker's own settings.
+    pub harness: Option<&'a Path>,
 }
+
+/// The environment variable that names the harness folder to a worker.
+pub const HARNESS_ENV: &str = "INSI_HARNESS";
 
 /// Run one attempt and record what came of it. Never panics on a broken
 /// task or tool: an attempt that cannot be judged is a result with `error`.
@@ -529,8 +535,18 @@ fn work_and_check(
             .join("\n\n");
         keep(artifacts, WORKER_PROMPT, &prompt)?;
         let argv = a.worker.render(&prompt)?;
+        let env: Vec<(&str, &std::ffi::OsStr)> = a
+            .harness
+            .map(|h| (HARNESS_ENV, h.as_os_str()))
+            .into_iter()
+            .collect();
         let ran = timed(result, "worker", || {
-            process::run(&argv, tree, Duration::from_secs(task.budget.wall_secs))
+            process::run_with(
+                &argv,
+                tree,
+                Duration::from_secs(task.budget.wall_secs),
+                &env,
+            )
         })?;
         result.timed_out = ran.timed_out;
         if let Some((model, usage)) = reported(&ran.stdout) {
@@ -826,6 +842,7 @@ mod tests {
                     briefed: vec![],
                     tags: vec![],
                     keep: false,
+                    harness: None,
                 },
             )
         };

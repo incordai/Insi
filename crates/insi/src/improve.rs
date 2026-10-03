@@ -259,6 +259,9 @@ fn score(
         .filter(|(seed, t)| !have.iter().any(|r| r.task == t.id && r.seed == *seed))
         .collect();
     let preface = harness.prompt().to_string();
+    // The worker is told the harness's own snapshot, never the person's
+    // folder: what it reads is exactly what is being scored.
+    let snapshot = ld.harness(&harness.id());
     let tags = vec![tag.clone(), format!("split={split}"), "loop".to_string()];
     pool::each(
         &missing,
@@ -276,6 +279,7 @@ fn score(
                     briefed: vec![],
                     tags: tags.clone(),
                     keep: l.keep,
+                    harness: Some(&snapshot),
                 },
             )
         },
