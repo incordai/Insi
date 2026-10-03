@@ -1045,6 +1045,7 @@ mod tests {
             artifacts: None,
             briefed: vec![],
             phases,
+            notes: vec![],
         }
     }
 

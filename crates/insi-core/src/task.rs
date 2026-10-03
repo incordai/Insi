@@ -193,6 +193,10 @@ pub struct EvalResult {
     /// none of them, and not in `wall_secs`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub phases: std::collections::BTreeMap<String, f64>,
+    /// What the harness noticed about the attempt that did not change its
+    /// verdict: why setup's output was not reused or not kept, for one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Tokens a worker reported, by kind.

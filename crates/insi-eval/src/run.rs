@@ -348,6 +348,7 @@ pub fn attempt(work: &Work, store: &Store, a: &Attempt) -> EvalResult {
         artifacts: None,
         briefed: a.briefed.clone(),
         phases: Default::default(),
+        notes: Vec::new(),
     };
     if let Err(why) = attempt_into(work, store, a, started, &mut result) {
         result.error = Some(why);
@@ -469,9 +470,17 @@ fn run_in(
         .and_then(|cache| crate::deps::key(cache, &task.setup, tree).map(|key| (cache, key)));
     if !task.setup.is_empty() {
         let reused = match &reusable {
-            Some((cache, key)) => timed(result, "reuse", || {
-                crate::deps::take(&work.root, cache, key, tree)
-            }),
+            Some((cache, key)) => {
+                match timed(result, "reuse", || {
+                    crate::deps::take(&work.root, cache, key, tree)
+                }) {
+                    Ok(()) => true,
+                    Err(why) => {
+                        result.notes.push(format!("setup output not reused: {why}"));
+                        false
+                    }
+                }
+            }
             None => false,
         };
         if !reused {
@@ -499,7 +508,9 @@ fn run_in(
     // Returned whether the attempt passed, failed or errored: what setup
     // made is unchanged unless the key files changed, and then it stays.
     if let Some((cache, key)) = &reusable {
-        crate::deps::give_back(&work.root, cache, &task.setup, key, tree);
+        if let Err(why) = crate::deps::give_back(&work.root, cache, &task.setup, key, tree) {
+            result.notes.push(format!("setup output not kept: {why}"));
+        }
     }
     outcome
 }

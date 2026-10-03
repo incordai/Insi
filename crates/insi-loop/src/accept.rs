@@ -116,6 +116,7 @@ mod tests {
             artifacts: None,
             briefed: vec![],
             phases: Default::default(),
+            notes: vec![],
         }
     }
 

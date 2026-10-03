@@ -51,23 +51,21 @@ fn slot(root: &Path, key: &str) -> PathBuf {
     root.join("deps").join(key)
 }
 
-/// Move the kept folders for `key` from the cache into `tree`. `true` when
-/// every one was there and moved; otherwise nothing is left half-moved and
-/// setup must run.
-pub fn take(root: &Path, cache: &SetupCache, key: &str, tree: &Path) -> bool {
+/// Move the kept folders for `key` from the cache into `tree`. `Ok` when
+/// every one was there and moved; otherwise why not — nothing is left
+/// half-moved, and setup must run.
+pub fn take(root: &Path, cache: &SetupCache, key: &str, tree: &Path) -> Result<(), String> {
     let slot = slot(root, key);
     if !slot.is_dir() {
-        return false;
+        return Err(format!("no cache for key {key} yet"));
     }
-    let Ok(_held) = insi_core::lock::lock_beside(&slot) else {
-        return false;
-    };
-    if cache
-        .keep
-        .iter()
-        .any(|k| !slot.join(k).exists() || tree.join(k).exists())
-    {
-        return false;
+    let _held = insi_core::lock::lock_beside(&slot)
+        .map_err(|e| format!("the cache for {key} could not be locked: {e}"))?;
+    if let Some(k) = cache.keep.iter().find(|k| !slot.join(k).exists()) {
+        return Err(format!("the cache for {key} holds no {k}"));
+    }
+    if let Some(k) = cache.keep.iter().find(|k| tree.join(k).exists()) {
+        return Err(format!("the worktree already has {k}"));
     }
     let mut moved: Vec<&String> = Vec::new();
     for k in &cache.keep {
@@ -75,45 +73,41 @@ pub fn take(root: &Path, cache: &SetupCache, key: &str, tree: &Path) -> bool {
         if let Some(parent) = to.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if std::fs::rename(slot.join(k), &to).is_err() {
+        if let Err(e) = std::fs::rename(slot.join(k), &to) {
             // Put back what already moved: the slot stays whole for the
             // next attempt, and this one runs setup.
             for done in moved {
                 let _ = std::fs::rename(tree.join(done), slot.join(done));
             }
-            return false;
+            return Err(format!("{k} could not be moved out of the cache: {e}"));
         }
         moved.push(k);
     }
-    true
+    Ok(())
 }
 
 /// Move the kept folders back from `tree` into the cache for `key` — only
 /// when the key read from `tree` now is still `key`, and only into a slot
-/// that is empty. `true` when they went back.
+/// that is empty. `Ok` when they went back; otherwise why not.
 pub fn give_back(
     root: &Path,
     cache: &SetupCache,
     setup: &[String],
     key: &str,
     tree: &Path,
-) -> bool {
+) -> Result<(), String> {
     if self::key(cache, setup, tree).as_deref() != Some(key) {
-        return false;
+        return Err("the key files changed during the attempt".to_string());
     }
     let slot = slot(root, key);
-    if std::fs::create_dir_all(&slot).is_err() {
-        return false;
+    std::fs::create_dir_all(&slot).map_err(|e| format!("{}: {e}", slot.display()))?;
+    let _held = insi_core::lock::lock_beside(&slot)
+        .map_err(|e| format!("the cache for {key} could not be locked: {e}"))?;
+    if let Some(k) = cache.keep.iter().find(|k| slot.join(k).exists()) {
+        return Err(format!("the cache for {key} already holds {k}"));
     }
-    let Ok(_held) = insi_core::lock::lock_beside(&slot) else {
-        return false;
-    };
-    if cache
-        .keep
-        .iter()
-        .any(|k| slot.join(k).exists() || !tree.join(k).is_dir())
-    {
-        return false;
+    if let Some(k) = cache.keep.iter().find(|k| !tree.join(k).is_dir()) {
+        return Err(format!("the worktree has no {k} to return"));
     }
     let mut moved: Vec<&String> = Vec::new();
     for k in &cache.keep {
@@ -121,17 +115,17 @@ pub fn give_back(
         if let Some(parent) = to.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if std::fs::rename(tree.join(k), &to).is_err() {
+        if let Err(e) = std::fs::rename(tree.join(k), &to) {
             // A folder still in use (a test process holding a file) is left
             // with the tree; the slot must hold all or none.
             for done in moved {
                 let _ = std::fs::rename(slot.join(done), tree.join(done));
             }
-            return false;
+            return Err(format!("{k} could not be moved into the cache: {e}"));
         }
         moved.push(k);
     }
-    true
+    Ok(())
 }
 
 #[cfg(test)]
@@ -177,22 +171,21 @@ mod tests {
         std::fs::write(first.join("node_modules/pkg/index.js"), "x").expect("file");
         let k = key(&cache(), &setup, &first).expect("key");
 
-        assert!(give_back(&root, &cache(), &setup, &k, &first));
+        give_back(&root, &cache(), &setup, &k, &first).expect("returned");
         assert!(!first.join("node_modules").exists(), "moved, not copied");
 
         let second = tree("second", "{\"v\":1}");
         assert_eq!(key(&cache(), &setup, &second).as_deref(), Some(k.as_str()));
-        assert!(take(&root, &cache(), &k, &second));
+        take(&root, &cache(), &k, &second).expect("reused");
         assert!(second.join("node_modules/pkg/index.js").is_file());
-        assert!(
-            !take(&root, &cache(), &k, &dir("third")),
-            "one holder at a time"
-        );
+        let why = take(&root, &cache(), &k, &dir("third")).expect_err("one holder at a time");
+        assert!(why.contains("holds no node_modules"), "{why}");
 
         let other = tree("other", "{\"v\":2}");
         let k2 = key(&cache(), &setup, &other).expect("key");
         assert_ne!(k, k2, "a different lockfile is a different key");
-        assert!(!take(&root, &cache(), &k2, &other));
+        let why = take(&root, &cache(), &k2, &other).expect_err("nothing for that key");
+        assert!(why.contains("no cache for key"), "{why}");
         assert_ne!(
             Some(k.clone()),
             key(
@@ -214,7 +207,8 @@ mod tests {
         std::fs::create_dir_all(t.join("node_modules")).expect("installed");
         let k = key(&cache(), &setup, &t).expect("key");
         std::fs::write(t.join("package-lock.json"), "{\"v\":1,\"extra\":true}").expect("w");
-        assert!(!give_back(&root, &cache(), &setup, &k, &t));
+        let why = give_back(&root, &cache(), &setup, &k, &t).expect_err("changed");
+        assert!(why.contains("key files changed"), "{why}");
         assert!(t.join("node_modules").is_dir(), "left with the tree");
         assert_eq!(
             key(&cache(), &setup, &dir("nolock")),

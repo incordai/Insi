@@ -509,6 +509,7 @@ mod tests {
             artifacts: None,
             briefed: vec![],
             phases: Default::default(),
+            notes: vec![],
         };
         let strategy = &Strategy::defaults()[0];
         let h = Harness::default().with("prompt.md", "Be careful.");
