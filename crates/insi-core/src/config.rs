@@ -64,6 +64,53 @@ pub struct Config {
     /// a model on a subscription is an entry of zeros.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub prices: std::collections::BTreeMap<String, Price>,
+    /// The ways `insi improve` asks for a change, one per step, chosen by a
+    /// bandit; [`Strategy::defaults`] when none are named.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strategies: Vec<Strategy>,
+    /// The proposer `insi improve` asks for changes; the worker when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposer: Option<Worker>,
+}
+
+/// One way of asking the proposer for a change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Strategy {
+    pub name: String,
+    /// What the proposer is told to do, in a sentence or two.
+    pub prompt: String,
+}
+
+impl Strategy {
+    /// The strategies used when the config names none.
+    pub fn defaults() -> Vec<Strategy> {
+        [
+            (
+                "from-failures",
+                "Read the failing tasks and their failures. Add or sharpen ONE instruction \
+                 that would have prevented the most common failure.",
+            ),
+            (
+                "clarify",
+                "Make ONE existing instruction clearer and more concrete, without adding a \
+                 new requirement.",
+            ),
+            (
+                "simplify",
+                "Remove or shorten ONE instruction that may mislead or distract the agent.",
+            ),
+            (
+                "checklist",
+                "Add or improve a short checklist the agent works through before it stops.",
+            ),
+        ]
+        .map(|(name, prompt)| Strategy {
+            name: name.to_string(),
+            prompt: prompt.to_string(),
+        })
+        .to_vec()
+    }
 }
 
 /// US dollars per million tokens, by kind.
@@ -180,6 +227,15 @@ impl Config {
         {
             return Err(why);
         }
+        let mut names = std::collections::BTreeSet::new();
+        for s in &config.strategies {
+            if s.name.trim().is_empty() || s.prompt.trim().is_empty() {
+                return Err("a strategy needs a name and a prompt".to_string());
+            }
+            if !names.insert(s.name.as_str()) {
+                return Err(format!("strategy \"{}\" is named twice", s.name));
+            }
+        }
         Ok(config)
     }
 
@@ -195,6 +251,15 @@ impl Config {
     /// The worker this repo names, else incode.
     pub fn worker(&self) -> Worker {
         self.worker.clone().unwrap_or_else(Worker::incode)
+    }
+
+    /// The strategies this repo names, else [`Strategy::defaults`].
+    pub fn strategies(&self) -> Vec<Strategy> {
+        if self.strategies.is_empty() {
+            Strategy::defaults()
+        } else {
+            self.strategies.clone()
+        }
     }
 
     /// The config as the file `insi init` writes.

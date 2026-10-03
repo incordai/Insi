@@ -15,6 +15,9 @@
 //! insi mcp      [--lessons <file>]
 //! insi hook     [--lessons <file>]   (a Claude Code PreToolUse/PostToolUse hook)
 //! insi issue    --number N [--repo <dir>] [--worker "<cmd {prompt}>"] [--lessons <file>] [--ready]
+//! insi improve  --harness <dir> --tasks <dir> --private <dir> [--steps N] [--seeds N] [--margin M]
+//!               [--holdout-margin M] [--worker "<cmd {prompt}>"] [--proposer "<cmd {prompt}>"]
+//!               [--only id,id] [--results <file>] [--jobs N] [--max-dollars D] [--keep]
 //! ```
 //!
 //! Commands are written as one string and split on spaces; an argument with
@@ -26,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod hook;
+mod improve;
 mod init;
 mod issue;
 mod learn;
@@ -60,6 +64,11 @@ const USAGE: &str = "usage:
   insi hook     [--lessons <file>]      (Claude Code hook: lessons before an edit, after a failure)
   insi issue    --number N [--repo <dir>] [--worker \"<cmd {prompt}>\"] [--lessons <file>] [--ready]
                 (work a GitHub issue labelled trusted_issue_label; a draft PR if test_cmd passes)
+  insi improve  --harness <dir> --tasks <dir> --private <dir> [--steps N] [--seeds N] [--margin M]
+                [--holdout-margin M] [--worker \"<cmd {prompt}>\"] [--proposer \"<cmd {prompt}>\"]
+                [--only id,id] [--results <file>] [--jobs N] [--max-dollars D] [--keep]
+                (the improvement loop: one proposed harness change per step, kept only when it
+                beats the incumbent on the older fair tasks by M and is not worse on the newer)
 
 In a repository with .insi/config.toml (write one with `insi init`), the
 check, setup, prefix and budget come from it, and --tasks/--private default
@@ -167,6 +176,7 @@ fn command_by_name(
         "validate" => validate_cmd(flags, work, results),
         "eval" => eval_cmd(flags, work, results),
         "learn" => learn_cmd(flags, work, results),
+        "improve" => improve_cmd(flags, work, results),
         "mcp" => {
             // stdout is the protocol from here on: nothing else may print.
             let lessons = lessons_file(flags, work);
@@ -721,6 +731,122 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
         },
     )?;
     report_cmd(results)
+}
+
+/// The improvement loop: selection on the older half of the fair tasks,
+/// held out on the newer.
+fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
+    let harness = PathBuf::from(
+        flags
+            .get("harness")
+            .ok_or_else(|| format!("--harness <dir> is required\n\n{USAGE}"))?,
+    );
+    if !harness.is_dir() {
+        return Err(format!("--harness {} is not a folder", harness.display()));
+    }
+    if flags.has("half") {
+        return Err(
+            "insi improve selects on the older half and holds out the newer; --half does not apply"
+                .to_string(),
+        );
+    }
+    let store = store(flags)?;
+    let config = repo_config()?.1;
+    let fair = report::fair_tasks(&store::read_results(results).unwrap_or_default());
+    let tasks: Vec<Task> = selected(flags, &store)?
+        .into_iter()
+        .filter(|t| fair.get(&t.id) == Some(&Some(true)))
+        .collect();
+    if tasks.len() < 2 {
+        return Err(format!(
+            "{} fair task(s); the loop needs at least two (run `insi validate` first)",
+            tasks.len()
+        ));
+    }
+    let select = half(tasks.clone(), "older")?;
+    let holdout = half(tasks, "newer")?;
+    let proposer = match flags.get("proposer") {
+        Some(_) => Worker::command(flags.argv("proposer")),
+        None => config.proposer.clone().unwrap_or_else(|| config.worker()),
+    };
+    proposer.render("probe")?;
+    let lessons_path = lessons_file(flags, work);
+    let lessons = if lessons_path.path.exists() {
+        lessons_path.all()?
+    } else {
+        Vec::new()
+    };
+    let margin = fraction(flags, "margin")?;
+    let holdout_margin = fraction(flags, "holdout-margin")?;
+    let mut spend = Spend {
+        cap: match flags.get("max-dollars") {
+            Some(v) => Some(
+                v.parse::<f64>()
+                    .ok()
+                    .filter(|d| *d > 0.0)
+                    .ok_or("--max-dollars must be a positive number")?,
+            ),
+            None => None,
+        },
+        spent: 0.0,
+    };
+    let strategies = config.strategies();
+    let outcome = improve::improve(
+        &improve::Improve {
+            work,
+            store: &store,
+            select: &select,
+            holdout: &holdout,
+            worker: &worker(flags)?,
+            proposer: &proposer,
+            harness: &harness,
+            strategies: &strategies,
+            lessons: &lessons,
+            steps: flags.number("steps", 5)? as u32,
+            seeds: flags.number("seeds", 1)? as u32,
+            margin,
+            holdout_margin,
+            jobs: jobs(flags)?,
+            keep: flags.has("keep"),
+        },
+        &mut |r| {
+            r.cost_usd = cost_of(&config.prices, r);
+            spend.add(r)
+        },
+    )?;
+    let ld = improve::LoopDir::new(work);
+    if outcome.best == outcome.start {
+        println!(
+            "no change beat the harness in {} step(s); the audit trail is {}",
+            outcome.steps,
+            ld.audit().display()
+        );
+    } else {
+        println!(
+            "{} change(s) accepted in {} step(s). The best harness is {}\n  \
+             compare: git diff --no-index {} {}\n  \
+             putting it in place is yours to decide; the audit trail is {}",
+            outcome.accepted,
+            outcome.steps,
+            outcome.best_dir.display(),
+            harness.display(),
+            outcome.best_dir.display(),
+            ld.audit().display()
+        );
+    }
+    Ok(())
+}
+
+/// A flag that is a fraction in `0..=1`, default 0.
+fn fraction(flags: &Flags, key: &str) -> Result<f64, String> {
+    match flags.get(key) {
+        None => Ok(0.0),
+        Some(v) => v
+            .parse::<f64>()
+            .ok()
+            .filter(|m| (0.0..=1.0).contains(m))
+            .ok_or_else(|| format!("--{key} must be a number from 0 to 1")),
+    }
 }
 
 /// What an attempt cost, from the config's price for the model it reported.

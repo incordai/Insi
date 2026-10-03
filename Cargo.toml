@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/insi-core", "crates/insi-eval", "crates/insi-memory", "crates/insi"]
+members = ["crates/insi-core", "crates/insi-eval", "crates/insi-memory", "crates/insi-loop", "crates/insi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,3 +21,4 @@ toml = "1.1"
 insi-core = { path = "crates/insi-core" }
 insi-eval = { path = "crates/insi-eval" }
 insi-memory = { path = "crates/insi-memory" }
+insi-loop = { path = "crates/insi-loop" }

@@ -385,3 +385,184 @@ fn the_whole_pipeline_runs_and_a_lesson_changes_a_later_result() {
     assert_eq!(ran_setup, 1, "setup ran more than once");
     assert_eq!(reused, all.len() - 1);
 }
+
+/// A fake proposer: a `git config` read that prints a fixed proposal.
+fn proposer(dir: &Path, file: &str, content: &str, why: &str) -> String {
+    let ini = dir.join("proposal.ini");
+    let json = serde_json::json!({"file": file, "content": content, "why": why}).to_string();
+    std::fs::write(
+        &ini,
+        format!(
+            "[proposal]\n\tjson = \"{}\"\n",
+            json.replace('\\', "\\\\").replace('"', "\\\"")
+        ),
+    )
+    .expect("proposal ini");
+    format!(
+        "git config --file {} --default {{prompt}} --get proposal.json",
+        ini.display().to_string().replace('\\', "/")
+    )
+}
+
+/// **THE LOOP KEEPS A CHANGE ONLY WHEN THE BENCHMARK SAYS IT IS BETTER.**
+///
+/// The diligent worker passes a task only when its prompt carries the
+/// task's marker. The harness starts with a prompt that names none, so it
+/// passes 0 of the 2 selection (older) tasks. The proposer offers a
+/// `prompt.md` naming the selection tasks' markers: 2 of 2 on selection, and
+/// no worse on the 2 held-out (newer) tasks — accepted. Offered again, the
+/// same change is refused before anything runs. A second run, resumed with a
+/// proposal that names nothing, scores worse and is rejected — without
+/// running the incumbent's attempts again. The person's harness folder is
+/// never written.
+#[test]
+fn the_loop_accepts_a_better_harness_and_rejects_a_worse_one() {
+    let repo = shop();
+    let tasks = temp("loop-tasks");
+    let private = temp("loop-private");
+    let work = temp("loop-work");
+    let cwd = temp("loop-cwd");
+    let results_file = work.join("results.jsonl");
+    let harness = temp("harness");
+    std::fs::write(harness.join("prompt.md"), "Work carefully.\n").expect("harness");
+    let insi = Insi {
+        bin: PathBuf::from(env!("CARGO_BIN_EXE_insi")),
+        cwd: cwd.clone(),
+        common: [
+            "--tasks",
+            tasks.to_str().expect("utf8"),
+            "--private",
+            private.to_str().expect("utf8"),
+            "--work",
+            work.to_str().expect("utf8"),
+            "--results",
+            results_file.to_str().expect("utf8"),
+        ]
+        .map(String::from)
+        .to_vec(),
+    };
+    let mined = Command::new(&insi.bin)
+        .args([
+            "mine",
+            "--source",
+            repo.to_str().expect("utf8"),
+            "--tasks",
+            tasks.to_str().expect("utf8"),
+            "--private",
+            private.to_str().expect("utf8"),
+            "--prefix",
+            "shop",
+            "--wall-secs",
+            "60",
+            "--check",
+            "git grep --no-index -q -f {tests} -- src",
+        ])
+        .current_dir(&cwd)
+        .output()
+        .expect("mine");
+    assert!(mined.status.success());
+    assert!(insi.run(&["validate"]).contains("4 of 4"));
+
+    let diligent = "git config --file src/fix.ini fix.line {prompt}";
+    let better = proposer(
+        &temp("p1"),
+        "prompt.md",
+        "Write CART-SUM and TAX-ROUND into src.",
+        "Name the markers the checks look for.",
+    );
+    let harness_arg = harness.to_str().expect("utf8");
+    let first = insi.run(&[
+        "improve",
+        "--harness",
+        harness_arg,
+        "--steps",
+        "2",
+        "--worker",
+        diligent,
+        "--proposer",
+        &better,
+    ]);
+    assert!(
+        first.contains("incumbent") && first.contains("0/2 on the selection tasks"),
+        "{first}"
+    );
+    assert!(
+        first.contains("step 1: accepted (2/2 against 0/2"),
+        "{first}"
+    );
+    assert!(
+        first.contains("step 2 [") && first.contains("leaves prompt.md as it is"),
+        "{first}"
+    );
+    assert!(
+        first.contains("1 change(s) accepted in 2 step(s)"),
+        "{first}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(harness.join("prompt.md")).expect("theirs"),
+        "Work carefully.\n",
+        "the person's harness is only read"
+    );
+
+    let loop_dir = work.join("loop");
+    let events: Vec<String> = results(&loop_dir.join("audit.jsonl"))
+        .iter()
+        .map(|e| format!("{} {}", e["step"], e["event"].as_str().unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "0 baseline",
+            "1 proposed",
+            "1 accepted",
+            "2 refused",
+            "2 finished"
+        ],
+        "{events:?}"
+    );
+    let best = results(&loop_dir.join("audit.jsonl"))
+        .last()
+        .and_then(|e| e["harness"].as_str().map(String::from))
+        .expect("best");
+    assert_eq!(
+        std::fs::read_to_string(loop_dir.join("harnesses").join(&best).join("prompt.md"))
+            .expect("best harness"),
+        "Write CART-SUM and TAX-ROUND into src."
+    );
+    // incumbent and candidate, each on 2 selection and 2 held-out tasks.
+    assert_eq!(results(&loop_dir.join("results.jsonl")).len(), 8);
+
+    let worse = proposer(&temp("p2"), "prompt.md", "Work fast.", "Shorter.");
+    let second = insi.run(&[
+        "improve",
+        "--harness",
+        harness_arg,
+        "--steps",
+        "1",
+        "--worker",
+        diligent,
+        "--proposer",
+        &worse,
+    ]);
+    assert!(
+        second.contains("step 3: rejected (0/2 against 0/2"),
+        "{second}"
+    );
+    assert!(second.contains("no change beat the harness"), "{second}");
+    assert_eq!(
+        results(&loop_dir.join("results.jsonl")).len(),
+        10,
+        "only the new candidate's 2 selection attempts ran"
+    );
+    let bandit: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(loop_dir.join("bandit.json")).expect("bandit"),
+    )
+    .expect("json");
+    let pulls: u64 = bandit["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .map(|a| a["pulls"].as_u64().unwrap_or_default())
+        .sum();
+    assert_eq!(pulls, 3, "every step is a pull, refused ones included");
+}

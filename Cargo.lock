@@ -30,6 +30,7 @@ version = "0.1.0"
 dependencies = [
  "insi-core",
  "insi-eval",
+ "insi-loop",
  "insi-memory",
  "serde_json",
 ]
@@ -51,6 +52,15 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "insi-loop"
+version = "0.1.0"
+dependencies = [
+ "insi-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

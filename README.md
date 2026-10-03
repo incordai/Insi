@@ -252,6 +252,39 @@ The most specific rule wins (deepest topic, then the first in the file); a
 rule with no paths and no commands, or a topic with an empty part, is
 refused when the config is read.
 
+## The improvement loop: `insi improve`
+
+The harness is a folder of prompts and settings a worker runs with; its
+`prompt.md` is put before every task's prompt. `insi improve --harness <dir>`
+changes it one file at a time and keeps a change only when the benchmark
+says it is better:
+
+1. A UCB1 bandit picks a strategy (`from-failures`, `clarify`, `simplify`,
+   `checklist`, or the `[[strategies]]` in `.insi/config.toml`): each is
+   tried once, then the ones whose changes were kept are tried more.
+2. The proposer (`--proposer`, `[proposer]` in the config, else the worker)
+   is shown the harness, each selection task's title and outcome, earlier
+   proposals and the lessons, and answers with one file's whole new text and
+   why. It is never shown a check's output: that is the hidden tests
+   speaking, and a proposer that read them could write their answers into
+   the harness. A path outside the harness, a hidden file, an oversized file
+   or a change that changes nothing is refused before anything runs.
+3. The candidate runs the older half of the fair tasks with the same worker,
+   seeds and budget as the incumbent, each attempt in its own worktree with
+   the check run there.
+4. It is kept only when it beats the incumbent on the same task × seed pairs
+   by `--margin` (a tie never wins) and is not worse on the newer half,
+   which is never used to select (`--holdout-margin` to demand more).
+
+Everything lands under `<work>/loop/`: every harness scored
+(`harnesses/<id>/`, named by content, so a harness is never run twice on
+the same task and seed), every attempt (`results.jsonl`), every state change
+(`audit.jsonl`: baseline, proposed, refused, accepted, rejected, finished),
+and the bandit (`bandit.json`). A second run continues the step count and
+the bandit. Your harness folder is only read: the loop prints where the best
+harness is, and putting it in place is yours to decide. Opening it as a pull
+request waits for the GitHub App, since the loop is meant to run unattended.
+
 ## Commands
 
 ```text
@@ -263,6 +296,9 @@ insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<
               [--results <file>] [--keep] [--jobs N]
 insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {prompt}>"] [--to-memory]
               [--results <file>] [--jobs N]
+insi improve  --harness <dir> --tasks <dir> --private <dir> [--steps N] [--seeds N] [--margin M]
+              [--holdout-margin M] [--worker "<cmd {prompt}>"] [--proposer "<cmd {prompt}>"]
+              [--only id,id] [--jobs N] [--max-dollars D] [--keep]
 insi report   [--results <file>]
 ```
 
