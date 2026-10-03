@@ -14,13 +14,25 @@ use std::path::Path;
 use insi_core::config::{DIR, FILE};
 use insi_core::Config;
 
+/// The toolchains `init` knows how to set up in CI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stack {
+    Node,
+    Rust,
+    Python,
+    Go,
+}
+
 /// How a repository is installed and checked, as `init` read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detected {
     /// What told it: `node (npm, vitest)`, `rust`, `python`, `go`.
     pub stack: String,
+    pub kind: Stack,
     pub setup: Vec<String>,
     pub check: Vec<String>,
+    /// The repository's whole test suite, as CI runs it on a pull request.
+    pub test_cmd: Vec<String>,
     /// What setup makes that attempts may reuse: `node_modules`, keyed on
     /// the lockfile. `None` without a lockfile — nothing to key on.
     pub setup_cache: Option<insi_core::task::SetupCache>,
@@ -75,8 +87,10 @@ pub fn detect(repo: &Path) -> Option<Detected> {
         };
         return Some(Detected {
             stack: format!("node ({manager}, {runner})"),
+            kind: Stack::Node,
             setup,
             check,
+            test_cmd: argv(&[manager, "test"]),
             setup_cache,
         });
     }
@@ -85,8 +99,10 @@ pub fn detect(repo: &Path) -> Option<Detected> {
         // whole suite runs it along with everything else.
         return Some(Detected {
             stack: "rust".to_string(),
+            kind: Stack::Rust,
             setup: Vec::new(),
             check: argv(&["cargo", "test"]),
+            test_cmd: argv(&["cargo", "test"]),
             setup_cache: None,
         });
     }
@@ -98,16 +114,20 @@ pub fn detect(repo: &Path) -> Option<Detected> {
         };
         return Some(Detected {
             stack: "python".to_string(),
+            kind: Stack::Python,
             setup,
             check: argv(&["python", "-m", "pytest", "{tests}"]),
+            test_cmd: argv(&["python", "-m", "pytest"]),
             setup_cache: None,
         });
     }
     if has("go.mod") {
         return Some(Detected {
             stack: "go".to_string(),
+            kind: Stack::Go,
             setup: argv(&["go", "mod", "download"]),
             check: argv(&["go", "test", "./..."]),
+            test_cmd: argv(&["go", "test", "./..."]),
             setup_cache: None,
         });
     }
@@ -123,6 +143,75 @@ pub struct Initialised {
     pub config: Config,
     pub mcp: Registration,
     pub hooks: Registration,
+    /// The CI workflow; `None` when no stack was detected to set one up for.
+    pub ci: Option<Registration>,
+}
+
+/// The workflow that runs the repository's tests on Insi's pull requests.
+pub const CI_FILE: &str = ".github/workflows/insi.yml";
+
+/// A GitHub Actions workflow that runs the repository's own setup and test
+/// suite on every pull request from an `insi/` branch — `insi issue`'s
+/// branches — so the draft a person reviews has been checked by the
+/// repository itself, not only by the worker's run. Read-only token.
+///
+/// `None` when a command holds a control character: it cannot be written as
+/// one line of a `run:` block, and a guess at it would run something else.
+pub fn ci_workflow(kind: Stack, setup: &[String], test_cmd: &[String]) -> Option<String> {
+    if setup
+        .iter()
+        .chain(test_cmd)
+        .any(|arg| arg.chars().any(char::is_control))
+    {
+        return None;
+    }
+    let toolchain = match kind {
+        Stack::Node => {
+            "      - uses: actions/setup-node@v4\n        with:\n          node-version: lts/*\n"
+        }
+        Stack::Python => {
+            "      - uses: actions/setup-python@v5\n        with:\n          python-version: \"3.x\"\n"
+        }
+        Stack::Go => {
+            "      - uses: actions/setup-go@v5\n        with:\n          go-version-file: go.mod\n"
+        }
+        // Rust is on GitHub's runners already.
+        Stack::Rust => "",
+    };
+    let mut out = String::from(
+        "# Written by `insi init`: the repository's own tests on pull requests from\n\
+         # Insi's branches (insi/...), before a person reviews them.\n\
+         name: insi\n\
+         on:\n  pull_request:\n\
+         permissions:\n  contents: read\n\
+         jobs:\n  check:\n    if: startsWith(github.head_ref, 'insi/')\n\
+         \x20   runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n\
+         \x20       with:\n          persist-credentials: false\n",
+    );
+    out.push_str(toolchain);
+    for command in [setup, test_cmd] {
+        if !command.is_empty() {
+            // A block scalar: YAML takes the line as it is, and the shell
+            // sees each argument quoted where it needs to be.
+            let line: Vec<String> = command.iter().map(|a| shell_quoted(a)).collect();
+            out.push_str(&format!("      - run: |\n          {}\n", line.join(" ")));
+        }
+    }
+    Some(out)
+}
+
+/// `arg` as one POSIX shell word: bare when it holds only characters the
+/// shell leaves alone, otherwise single-quoted.
+fn shell_quoted(arg: &str) -> String {
+    let bare = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@,+%".contains(c));
+    if bare {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
 }
 
 /// The project MCP file Claude Code reads at a repository's root.
@@ -168,13 +257,20 @@ pub fn hooks_file() -> serde_json::Value {
     })
 }
 
+/// `value` as the pretty JSON a registration file holds.
+fn json_text(value: &serde_json::Value) -> Result<String, String> {
+    serde_json::to_string_pretty(value)
+        .map(|t| format!("{t}\n"))
+        .map_err(|e| e.to_string())
+}
+
 /// Write `fresh` to `path` when there is no file; otherwise read it and
 /// report whether `registered` finds Insi in it. An existing file is never
 /// changed.
 fn register(
     path: &Path,
     registered: fn(&str) -> bool,
-    fresh: serde_json::Value,
+    fresh: &str,
 ) -> Result<Registration, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(if registered(&text) {
@@ -186,9 +282,7 @@ fn register(
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             }
-            let text = serde_json::to_string_pretty(&fresh).map_err(|e| e.to_string())?;
-            std::fs::write(path, format!("{text}\n"))
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(path, fresh).map_err(|e| format!("{}: {e}", path.display()))?;
             Ok(Registration::Written)
         }
         Err(e) => Err(format!("{}: {e}", path.display())),
@@ -203,6 +297,10 @@ fn mcp_registered(text: &str) -> bool {
 
 fn hooks_registered(text: &str) -> bool {
     text.contains("insi hook")
+}
+
+fn ci_registered(text: &str) -> bool {
+    text.contains("'insi/'")
 }
 
 /// The repository's name: its folder's.
@@ -251,8 +349,16 @@ pub fn init(
             .unwrap_or_default(),
     };
     let name = repo_name(repo);
+    let test_cmd = detected
+        .as_ref()
+        .map(|d| d.test_cmd.clone())
+        .unwrap_or_default();
+    let ci_text = detected
+        .as_ref()
+        .and_then(|d| ci_workflow(d.kind, &setup, &test_cmd));
     let config = Config {
         topic: Some(name.clone()),
+        test_cmd,
         check,
         setup,
         setup_cache,
@@ -271,8 +377,20 @@ pub fn init(
     )
     .map_err(|e| format!("{}: {e}", config_path.display()))?;
     let gitignore_changed = ignore_work_folder(repo)?;
-    let mcp = register(&repo.join(MCP_FILE), mcp_registered, mcp_file())?;
-    let hooks = register(&repo.join(SETTINGS_FILE), hooks_registered, hooks_file())?;
+    let mcp = register(
+        &repo.join(MCP_FILE),
+        mcp_registered,
+        &json_text(&mcp_file())?,
+    )?;
+    let hooks = register(
+        &repo.join(SETTINGS_FILE),
+        hooks_registered,
+        &json_text(&hooks_file())?,
+    )?;
+    let ci = match &ci_text {
+        Some(text) => Some(register(&repo.join(CI_FILE), ci_registered, text)?),
+        None => None,
+    };
     Ok(Initialised {
         detected,
         config_path,
@@ -280,6 +398,7 @@ pub fn init(
         config,
         mcp,
         hooks,
+        ci,
     })
 }
 
@@ -469,6 +588,82 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(other.join(SETTINGS_FILE)).expect("file"),
             their_settings
+        );
+    }
+
+    /// **INSI'S PULL REQUESTS ARE CHECKED BY THE REPOSITORY'S OWN TESTS.**
+    /// A node repo gets a workflow that installs node, runs its setup and its
+    /// whole test suite, only on `insi/` branches and with a read-only token;
+    /// the same suite becomes `test_cmd`. A workflow already there is left
+    /// alone; Rust needs no toolchain step; a repo with no stack gets none.
+    #[test]
+    fn init_writes_a_ci_workflow_for_insi_branches() {
+        let node = repo_with(&[
+            ("package.json", r#"{"devDependencies":{"vitest":"^3"}}"#),
+            ("package-lock.json", "{}"),
+        ]);
+        let done = init(&node, vec![], None, false).expect("init");
+        assert_eq!(done.ci, Some(Registration::Written));
+        assert_eq!(done.config.test_cmd, ["npm", "test"]);
+        let ci = std::fs::read_to_string(node.join(CI_FILE)).expect("workflow");
+        for part in [
+            "if: startsWith(github.head_ref, 'insi/')",
+            "contents: read",
+            "persist-credentials: false",
+            "actions/setup-node@v4",
+            "          npm ci\n",
+            "          npm test\n",
+        ] {
+            assert!(ci.contains(part), "{part} missing from:\n{ci}");
+        }
+        assert!(
+            ci.find("npm ci") < ci.find("npm test"),
+            "setup runs before the tests"
+        );
+        let again = init(&node, vec![], None, true).expect("forced");
+        assert_eq!(again.ci, Some(Registration::AlreadyThere));
+
+        let theirs = "name: ci\non: push\n";
+        let rust = repo_with(&[("Cargo.toml", "")]);
+        let rust_ci = ci_workflow(Stack::Rust, &[], &argv(&["cargo", "test"])).expect("ci");
+        assert!(!rust_ci.contains("uses: actions/setup-"), "{rust_ci}");
+        assert!(rust_ci.contains("          cargo test\n"));
+        std::fs::create_dir_all(rust.join(".github/workflows")).expect("dir");
+        std::fs::write(rust.join(CI_FILE), theirs).expect("theirs");
+        let done = init(&rust, vec![], None, false).expect("init");
+        assert_eq!(done.ci, Some(Registration::LeftAlone));
+        assert_eq!(
+            std::fs::read_to_string(rust.join(CI_FILE)).expect("file"),
+            theirs
+        );
+
+        let unknown = repo_with(&[("notes.txt", "")]);
+        let done = init(&unknown, argv(&["make", "check"]), None, false).expect("init");
+        assert_eq!(done.ci, None);
+        assert!(!unknown.join(CI_FILE).exists());
+    }
+
+    /// **A COMMAND REACHES THE SHELL AS THE ARGUMENTS IT WAS.** Arguments
+    /// with spaces or shell characters are single-quoted; one with a newline
+    /// cannot be one `run:` line, so no workflow is written for it.
+    #[test]
+    fn ci_commands_are_quoted_for_the_shell() {
+        assert_eq!(shell_quoted("npm"), "npm");
+        assert_eq!(shell_quoted("./..."), "./...");
+        assert_eq!(shell_quoted("a b"), "'a b'");
+        assert_eq!(shell_quoted("$(id)"), "'$(id)'");
+        assert_eq!(shell_quoted("it's"), r"'it'\''s'");
+        assert_eq!(shell_quoted(""), "''");
+        let ci = ci_workflow(
+            Stack::Python,
+            &argv(&["pip", "install", "-e", ".[dev]"]),
+            &[],
+        )
+        .expect("ci");
+        assert!(ci.contains("          pip install -e '.[dev]'\n"), "{ci}");
+        assert_eq!(
+            ci_workflow(Stack::Go, &[], &argv(&["go", "test\nrm"])),
+            None
         );
     }
 }

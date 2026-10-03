@@ -13,7 +13,7 @@ same benchmark: `lessons=off` against `lessons=on`.
 
 ```sh
 cd your-repo
-insi init       # writes .insi/config.toml, ignores .insi-work/, registers insi mcp
+insi init       # writes .insi/config.toml, ignores .insi-work/, registers insi mcp, hooks and CI
 insi mine       # tasks from the history, hidden tests outside the checkout
 insi validate   # which tasks are fair
 insi eval --fair-only
@@ -25,6 +25,7 @@ jest, Cargo, Python, Go — and writes what it found:
 
 ```toml
 topic = "shop"
+test_cmd = ["npm", "test"]
 check = ["npx", "vitest", "run", "{tests}"]
 setup = ["npm", "ci"]
 private_checks = "../insi-private/shop"
@@ -47,6 +48,16 @@ and an existing config is never overwritten without `--force`. With a
 config, `mine` needs no flags, and every command finds its tasks in
 `<private_checks>/tasks` and the hidden tests in `<private_checks>/hidden`,
 outside the checkout a worker works in.
+
+`test_cmd` is the repository's whole suite, and init also writes it into a
+missing `.github/workflows/insi.yml`: on a pull request from an `insi/`
+branch (the drafts `insi issue` opens), the stack's toolchain is installed,
+`setup` runs, then `test_cmd`, with a read-only token that is not left in
+the checkout for the code under test to read. A person reviews a
+draft the repository's own CI has already checked. An existing workflow file
+is left alone, and with no detected stack none is written. There is no
+`evals/` folder to commit: a task's definition holds its reference commit,
+which is the answer, so tasks stay in `private_checks`.
 
 ## How a task is made
 

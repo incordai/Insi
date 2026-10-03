@@ -345,6 +345,21 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
             serde_json::to_string_pretty(&init::hooks_file()).unwrap_or_default()
         ),
     }
+    match done.ci {
+        Some(init::Registration::Written) => println!(
+            "wrote {}: pull requests from insi/ branches run `{}` before review",
+            init::CI_FILE,
+            done.config.test_cmd.join(" ")
+        ),
+        Some(init::Registration::AlreadyThere) => {
+            println!("{} already checks insi/ branches", init::CI_FILE)
+        }
+        Some(init::Registration::LeftAlone) => println!(
+            "{} exists and was not changed; Insi's pull requests are checked only by what it runs",
+            init::CI_FILE
+        ),
+        None => println!("no CI workflow written: no stack detected to set one up for"),
+    }
     println!(
         "\nnext, from this folder:\n  insi mine\n  insi validate --jobs 2\n  insi eval --fair-only"
     );
