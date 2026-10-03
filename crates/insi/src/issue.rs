@@ -265,6 +265,20 @@ pub fn work_issue(run: &Run, hub: &dyn Hub) -> Result<Outcome, String> {
     outcome
 }
 
+/// Run `argv` for the work in `tree`: inside the repository's sandbox when
+/// it names one, otherwise on this machine.
+fn step(
+    cfg: &Config,
+    argv: &[String],
+    tree: &Path,
+    wall: Duration,
+) -> Result<process::Outcome, String> {
+    match &cfg.sandbox {
+        Some(sandbox) => process::run(&sandbox.wrap(argv, tree), tree, wall),
+        None => process::run(argv, tree, wall),
+    }
+}
+
 fn work_in(
     run: &Run,
     hub: &dyn Hub,
@@ -275,7 +289,7 @@ fn work_in(
 ) -> Result<Outcome, String> {
     let cfg = run.config;
     if !cfg.setup.is_empty() {
-        let setup = process::run(&cfg.setup, tree, Duration::from_secs(30 * 60))?;
+        let setup = step(cfg, &cfg.setup, tree, Duration::from_secs(30 * 60))?;
         if !setup.success() {
             return Err(format!("setup failed: {}", last_line(&setup.tail())));
         }
@@ -295,7 +309,7 @@ fn work_in(
     );
     let wall = Duration::from_secs(cfg.wall_secs.unwrap_or(1800));
     let started = std::time::Instant::now();
-    let ran = process::run(&run.worker.render(&prompt)?, tree, wall)?;
+    let ran = step(cfg, &run.worker.render(&prompt)?, tree, wall)?;
     let worker_secs = started.elapsed().as_secs();
     let tokens = insi_eval::run::reported(&ran.stdout).map(|(_, usage)| usage.total());
 
@@ -323,7 +337,8 @@ fn work_in(
     let title = format!("Fix #{}: {}", issue.number, issue.title.trim());
     git(tree, &["commit", "--quiet", "-m", &title])?;
 
-    let check = process::run(&cfg.test_cmd, tree, Duration::from_secs(30 * 60))?;
+    // The check runs the code the worker wrote: inside the sandbox too.
+    let check = step(cfg, &cfg.test_cmd, tree, Duration::from_secs(30 * 60))?;
     if !check.success() {
         return Ok(Outcome::Kept {
             branch: branch.to_string(),
@@ -362,6 +377,7 @@ fn work_in(
          - **Check:** `{check}` passed in this branch's worktree.\n\
          - **Worker:** `{worker}`, {secs}s{tokens}.\n\
          - **Lessons briefed:** {lessons}.\n\
+         - **Where it ran:** {place}.\n\
          - **Credential and personal-data scan:** nothing credential- or PII-shaped in the \
          lines this branch adds.\n",
         n = issue.number,
@@ -379,6 +395,13 @@ fn work_in(
             "none"
         } else {
             "yes, see the commit's prompt"
+        },
+        place = match &cfg.sandbox {
+            Some(s) => format!(
+                "setup, worker and check inside the sandbox `{}`",
+                s.command.first().map(String::as_str).unwrap_or("?")
+            ),
+            None => "on the operator's machine (no sandbox configured)".to_string(),
         },
     );
     let url = hub.create_pr(
@@ -633,6 +656,58 @@ mod tests {
         // Worked once: the branch exists, so it is not worked again.
         let why = attempt(&hub(&["insi"], true), &checked).expect_err("again");
         assert!(why.contains("already exists"), "{why}");
+    }
+
+    /// **WITH A SANDBOX, SETUP, THE WORKER AND THE CHECK ALL RUN INSIDE IT.**
+    /// The stand-in sandbox is `git -C {tree}`: the worker's `config …` and
+    /// the check's `log …` are no programs on their own, so the issue is
+    /// worked only if each went through the sandbox with the worktree's path
+    /// in place of `{tree}`; the PR says where the work ran.
+    #[test]
+    fn a_sandbox_runs_every_step_of_the_issue() {
+        let (work, origin) = repo();
+        let hub = FakeHub {
+            issue: issue(&["insi"], true),
+            created: RefCell::new(Vec::new()),
+        };
+        let argv = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let cfg = Config {
+            setup: argv(&["status", "--short"]),
+            sandbox: Some(insi_core::config::Sandbox {
+                command: argv(&["git", "-C", "{tree}"]),
+            }),
+            ..config(&["log", "-1", "--format=%s"])
+        };
+        let worker = Worker::command(argv(&[
+            "config",
+            "--file",
+            "greet.txt",
+            "issue.prompt",
+            "{prompt}",
+        ]));
+        let outcome = work_issue(
+            &Run {
+                repo: &work,
+                number: 42,
+                config: &cfg,
+                worker: &worker,
+                work_root: &temp("sandbox-root"),
+                briefing: "",
+                draft: true,
+            },
+            &hub,
+        )
+        .expect("worked");
+        assert!(matches!(outcome, Outcome::Opened { .. }), "{outcome:?}");
+        let pushed = git(&origin, &["show", "insi/issue-42:greet.txt"]).expect("pushed");
+        assert!(pushed.contains("Greeting is rude"), "{pushed}");
+        assert!(
+            hub.created.borrow()[0]
+                .body
+                .contains("inside the sandbox `git`"),
+            "{}",
+            hub.created.borrow()[0].body
+        );
     }
 
     #[test]

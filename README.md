@@ -179,8 +179,22 @@ insi issue --number 42            # from the repository's folder
   the lines the branch adds (a prefixed key, a cloud key id, a JWT, a
   private-key block, a bearer token, or a file such as `.env` or `id_rsa`).
 - **A draft, with its evidence.** `Closes #<n>`, the check that passed, the
-  worker, its time and tokens, whether lessons were briefed. `--ready` opens
-  it ready for review instead. Insi never merges.
+  worker, its time and tokens, whether lessons were briefed, where it ran.
+  `--ready` opens it ready for review instead. Insi never merges.
+- **In a sandbox, when you name one.** The issue's text is anyone's, and the
+  check runs the code the worker wrote. With a `[sandbox]` command, setup,
+  the worker and the check each run inside it, with `{tree}` as the
+  worktree's path:
+
+  ```toml
+  [sandbox]
+  command = ["docker", "run", "--rm", "-v", "{tree}:/work", "-w", "/work", "node:22"]
+  ```
+
+  The container gets only what the command gives it: add `-e` for the one
+  model key the worker needs, `--network none` where the steps need no
+  network. Committing, the scan and the push stay outside it, on this
+  machine. A sandbox with no `{tree}` is refused.
 
 GitHub is reached through the `gh` CLI, which holds the login: Insi reads,
 holds and sends no token.

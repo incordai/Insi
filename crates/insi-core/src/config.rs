@@ -71,6 +71,55 @@ pub struct Config {
     /// The proposer `insi improve` asks for changes; the worker when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposer: Option<Worker>,
+    /// Where issue work runs: setup, the worker and the check, each inside
+    /// this command instead of on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<Sandbox>,
+}
+
+/// What a sandbox command must contain: where the work's folder goes.
+pub const TREE: &str = "{tree}";
+
+/// A command every step of issue work runs inside, e.g. a container:
+///
+/// ```toml
+/// [sandbox]
+/// command = ["docker", "run", "--rm", "-v", "{tree}:/work", "-w", "/work", "node:22"]
+/// ```
+///
+/// The step's own command is appended to it, and `{tree}` becomes the
+/// worktree's path. What the container can reach is the command's to say:
+/// the host's environment, credentials and network reach it only where the
+/// command passes them on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sandbox {
+    pub command: Vec<String>,
+}
+
+impl Sandbox {
+    /// Why this sandbox cannot be used, if it cannot.
+    pub fn problem(&self) -> Option<String> {
+        if self.command.first().is_none_or(|p| p.trim().is_empty()) {
+            return Some("sandbox.command is empty; name the program to run".to_string());
+        }
+        if !self.command.iter().any(|a| a.contains(TREE)) {
+            return Some(format!(
+                "sandbox.command has no {TREE} argument, so the work's folder would never be in it"
+            ));
+        }
+        None
+    }
+
+    /// `argv` run inside this sandbox for the work in `tree`.
+    pub fn wrap(&self, argv: &[String], tree: &Path) -> Vec<String> {
+        let tree = tree.display().to_string();
+        self.command
+            .iter()
+            .map(|a| a.replace(TREE, &tree))
+            .chain(argv.iter().cloned())
+            .collect()
+    }
 }
 
 /// One way of asking the proposer for a change.
@@ -227,6 +276,9 @@ impl Config {
         {
             return Err(why);
         }
+        if let Some(why) = config.sandbox.as_ref().and_then(Sandbox::problem) {
+            return Err(why);
+        }
         let mut names = std::collections::BTreeSet::new();
         for s in &config.strategies {
             if s.name.trim().is_empty() || s.prompt.trim().is_empty() {
@@ -302,6 +354,36 @@ mod tests {
 
         let why = Config::parse("tset_cmd = [\"x\"]").expect_err("misspelt");
         assert!(why.contains("tset_cmd"), "{why}");
+    }
+
+    /// **A SANDBOX HOLDS THE WORK'S FOLDER, OR IS REFUSED.** The step's
+    /// command follows the sandbox's, with `{tree}` filled in.
+    #[test]
+    fn a_sandbox_wraps_each_command_around_the_work_folder() {
+        let config = Config::parse(
+            "[sandbox]\ncommand = [\"docker\", \"run\", \"-v\", \"{tree}:/work\", \"img\"]",
+        )
+        .expect("valid");
+        let wrapped = config
+            .sandbox
+            .expect("sandbox")
+            .wrap(&["npm".into(), "test".into()], Path::new("/w/issue-1"));
+        assert_eq!(
+            wrapped,
+            [
+                "docker",
+                "run",
+                "-v",
+                "/w/issue-1:/work",
+                "img",
+                "npm",
+                "test"
+            ]
+        );
+        let why = Config::parse("[sandbox]\ncommand = [\"docker\", \"run\", \"img\"]")
+            .expect_err("no tree");
+        assert!(why.contains("{tree}"), "{why}");
+        assert!(Config::parse("[sandbox]\ncommand = []").is_err());
     }
 
     /// **TOPIC RULES ARE READ, AND ONE THAT CAN NEVER APPLY IS REFUSED.**
