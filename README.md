@@ -97,6 +97,20 @@ and the check runs. A failure's output is reduced to a signature (paths,
 hashes and numbers normalised), so the same mistake made twice is counted as
 a repeat.
 
+A task may also carry a **public check**: the repository's own test command
+(`test_cmd`, or `insi mine --public-check`), the score a worker could see. It
+runs on the tree exactly as the worker left it, before the hidden tests
+arrive, and the attempt records `public_passed`; its output is kept as
+`public.out`. A pass there with a hidden failure is reward hacking — the
+visible score met without the work — and `insi report` counts it per
+condition. Controls never run it, and one that cannot start is a note, never
+the verdict.
+
+Three attempts in a row that could not run at all (a git or setup failure,
+not a failed check) stop `insi eval` and `insi improve`: a machine that keeps
+failing would otherwise burn through every task. A git failure names its exit
+code, in hex as well when it is a Windows status such as `0xC0000142`.
+
 The worker's prompt is the fix commit's message, plus two things a real
 issue would say:
 
@@ -134,10 +148,25 @@ Leave it off for a benchmark: an experiment's lessons belong in its own file,
 where they can be reset.
 
 `insi eval --lessons <file>` puts a briefing in front of each task's prompt:
-the lessons of the same repository, newest first, within 4,000 characters,
-and **only lessons learned from tasks dated before this one** — compared as
-instants, so commit dates in different time zones order correctly. A lesson
-can never be briefed to the task it came from, or to anything earlier.
+the lessons of the same repository within 4,000 characters, and **only
+lessons learned from tasks dated before this one** — compared as instants,
+so commit dates in different time zones order correctly. A lesson can never
+be briefed to the task it came from, or to anything earlier.
+
+The briefing is consolidated as of the task's date, never with hindsight:
+
+- **One item per action.** Lessons whose `use` says the same thing (case,
+  spacing and a final full stop aside) are one item, carrying all their ids.
+- **Beliefs first.** An action learned twice or more is a belief, briefed as
+  "Learned N times"; one seen once follows as "Seen when …". Newest next.
+- **Superseded lessons drop out.** A later lesson whose `avoid` is an earlier
+  lesson's `use` retires the earlier one.
+- **Promotion.** An action learned in two or more sibling topics is briefed
+  on their shared parent too, marked `[across <parent>]`.
+
+`insi issue --lessons` and the MCP server's `insi_briefing` build the same
+briefing; `insi hook` picks lessons by its own route (the file about to be
+edited, the command that just failed) and is not consolidated this way.
 
 Every worker attempt is tagged `lessons=on` or `lessons=off`, and records
 which lessons it was briefed with.
@@ -207,7 +236,7 @@ lesson or runs anything.
 
 | Tool | What it answers |
 |---|---|
-| `insi_briefing {topic, before?, max_chars?}` | the briefing for a repository: verified lessons, newest first, as actions |
+| `insi_briefing {topic, before?, max_chars?}` | the briefing for a repository: verified lessons consolidated as for `insi eval` (beliefs first), as actions |
 | `insi_lessons_for_error {error, topic?}` | lessons whose failure looked like this one: the error is normalized (paths, numbers, colour codes gone) and matched line by line |
 
 `insi init` registers it for the repository: a missing `.mcp.json` is written
@@ -336,14 +365,29 @@ the same task and seed), every attempt (`results.jsonl`), every state change
 (`audit.jsonl`: baseline, proposed, refused, accepted, rejected, finished),
 and the bandit (`bandit.json`). A second run continues the step count and
 the bandit. Your harness folder is only read: the loop prints where the best
-harness is, and putting it in place is yours to decide. Opening it as a pull
-request waits for the GitHub App, since the loop is meant to run unattended.
+harness is, and putting it in place is yours to decide.
+
+- `--pr` opens it as a **draft** pull request on the repository holding the
+  harness folder, through `gh`'s login. Only the files the loop changed are
+  written, in a fresh worktree of the default branch on
+  `insi/harness-<id>`, so your uncommitted edits never ride along. The same
+  credential and personal-data scan as `insi issue` runs first; a harness
+  that fails it stays on a local branch and nothing is pushed. The PR lists
+  each change kept with its benchmark verdict. A branch that exists already
+  is refused: that harness was proposed before.
+- `--to-memory` files each change kept, and the run's end, in the local
+  Incord Memory engine as a `decision` (tagged `insi`, `loop:accepted` or
+  `loop:finished`). Proposals and scores stay in `audit.jsonl`, the record;
+  an engine that is down costs a printed line, never the run.
+
+Unattended runs that open pull requests wait for the GitHub App with
+short-lived, PR-only tokens; until then `--pr` uses the operator's login.
 
 ## Commands
 
 ```text
 insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
-              [--setup "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
+              [--setup "<cmd>"] [--public-check "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
 insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
 insi eval     --tasks <dir> --private <dir> [--seeds N] [--tag k=v] [--worker "<cmd {prompt}>"]
               [--lessons <file>] [--fair-only] [--only id,id] [--half older|newer]
@@ -352,7 +396,7 @@ insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker "<cmd {
               [--results <file>] [--jobs N]
 insi improve  --harness <dir> --tasks <dir> --private <dir> [--steps N] [--seeds N] [--margin M]
               [--holdout-margin M] [--worker "<cmd {prompt}>"] [--proposer "<cmd {prompt}>"]
-              [--only id,id] [--jobs N] [--max-dollars D] [--keep]
+              [--only id,id] [--jobs N] [--max-dollars D] [--keep] [--to-memory] [--pr]
 insi report   [--results <file>]
 ```
 
