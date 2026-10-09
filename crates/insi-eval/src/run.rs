@@ -568,6 +568,11 @@ fn work_and_check(
             result.usage = Some(usage);
         }
         keep(artifacts, WORKER_OUTPUT, &ran.tail())?;
+        if ran.timed_out {
+            if let Some(note) = clear_stale_lock(tree)? {
+                result.notes.push(note);
+            }
+        }
         // What the worker changed, new files included, before the hidden
         // tests are copied over it. The worktree's index is its own.
         git(tree, &["add", "--all"])?;
@@ -595,6 +600,32 @@ fn work_and_check(
         result.signature = Some(normalize(&check.tail()));
     }
     Ok(())
+}
+
+/// Remove the index lock a worker stopped at its budget left in `tree`'s git
+/// directory; what to note on the attempt when there was one.
+///
+/// Called only for a worker that timed out: `process::run_with` has then
+/// killed its whole process tree (`process::kill_tree`), so no git of the
+/// worker's is still running and the lock is stale. Measured on run 2: a
+/// worker cut off mid-git left `index.lock`, and Insi's own `git add` then
+/// refused, losing the attempt as an error instead of judging it.
+fn clear_stale_lock(tree: &Path) -> Result<Option<String>, String> {
+    let git_dir = PathBuf::from(git(tree, &["rev-parse", "--git-dir"])?);
+    let git_dir = if git_dir.is_absolute() {
+        git_dir
+    } else {
+        tree.join(git_dir)
+    };
+    let lock = git_dir.join("index.lock");
+    if !lock.exists() {
+        return Ok(None);
+    }
+    std::fs::remove_file(&lock).map_err(|e| format!("{}: {e}", lock.display()))?;
+    Ok(Some(format!(
+        "removed the index.lock the stopped worker left ({})",
+        lock.display()
+    )))
 }
 
 /// The public check on the tree exactly as the worker left it, before the
@@ -783,6 +814,43 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("insi-{label}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir
+    }
+
+    /// **A LOCK A STOPPED WORKER LEFT DOES NOT COST THE ATTEMPT.** In a real
+    /// worktree of Insi's clone, an `index.lock` left behind makes `git add`
+    /// refuse — the error run 2 lost an attempt to — and once cleared,
+    /// `git add` works and the attempt is told what was removed; with no
+    /// lock there is nothing to note.
+    #[test]
+    fn a_stale_index_lock_is_cleared() {
+        let source = temp_dir("lock-src");
+        let sh = |args: &[&str]| git(&source, args).expect("git");
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.email", "t@example.invalid"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(source.join("a.txt"), "a\n").expect("w");
+        sh(&["add", "."]);
+        sh(&["commit", "-q", "-m", "first"]);
+        let head = sh(&["rev-parse", "HEAD"]);
+        let work = Work::new(temp_dir("lock-work"));
+        let clone = work.clone_of(&source.display().to_string()).expect("clone");
+        let tree = work.worktree(&clone, &head, "locked").expect("worktree");
+        std::fs::write(tree.join("b.txt"), "b\n").expect("worker's file");
+        let git_dir = PathBuf::from(git(&tree, &["rev-parse", "--git-dir"]).expect("git dir"));
+        let git_dir = if git_dir.is_absolute() {
+            git_dir
+        } else {
+            tree.join(git_dir)
+        };
+        std::fs::write(git_dir.join("index.lock"), "").expect("the stopped worker's lock");
+
+        let refused = git(&tree, &["add", "--all"]).expect_err("locked");
+        assert!(refused.contains("index.lock"), "{refused}");
+        let note = clear_stale_lock(&tree).expect("cleared").expect("noted");
+        assert!(note.contains("index.lock"), "{note}");
+        git(&tree, &["add", "--all"]).expect("git add works again");
+        assert_eq!(clear_stale_lock(&tree).expect("checked"), None);
+        work.drop_worktree(&clone, &tree);
     }
 
     /// **THE CONTROLS RUN FOR REAL.** In a two-commit repository whose fix
