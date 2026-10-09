@@ -730,6 +730,7 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
         },
         spent: 0.0,
     };
+    let mut unrunnable = Unrunnable::default();
     pool::each(
         &runs,
         jobs(flags)?,
@@ -780,7 +781,8 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
             );
             // After the result is saved: the attempt that crosses the cap is
             // kept, and no new one starts.
-            spend.add(&r)
+            spend.add(&r)?;
+            unrunnable.add(&r)
         },
     )?;
     report_cmd(results)
@@ -843,6 +845,7 @@ fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String>
         },
         spent: 0.0,
     };
+    let mut unrunnable = Unrunnable::default();
     let strategies = config.strategies();
     let outcome = improve::improve(
         &improve::Improve {
@@ -864,7 +867,8 @@ fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String>
         },
         &mut |r| {
             r.cost_usd = cost_of(&config.prices, r);
-            spend.add(r)
+            spend.add(r)?;
+            unrunnable.add(r)
         },
     )?;
     let ld = improve::LoopDir::new(work);
@@ -952,6 +956,42 @@ impl Spend {
                 self.spent
             )),
             None => Ok(()),
+        }
+    }
+}
+
+/// How many attempts in a row may fail to run at all before a run stops.
+const UNRUNNABLE_IN_A_ROW: usize = 3;
+
+/// Stops a run when the machine, not the work, is failing: attempts that
+/// could not run (an `error` — git, setup, the clone) several times in a
+/// row. Without it, one broken moment turns every remaining task into an
+/// instant non-result and the run spends itself on nothing.
+#[derive(Default)]
+struct Unrunnable {
+    in_a_row: usize,
+}
+
+impl Unrunnable {
+    fn add(&mut self, r: &insi_core::EvalResult) -> Result<(), String> {
+        match &r.error {
+            None => {
+                self.in_a_row = 0;
+                Ok(())
+            }
+            Some(why) => {
+                self.in_a_row += 1;
+                if self.in_a_row >= UNRUNNABLE_IN_A_ROW {
+                    Err(format!(
+                        "{UNRUNNABLE_IN_A_ROW} attempts in a row could not run (the last: {}); \
+                         stopping so the rest are not spent on nothing — every result so far is \
+                         saved",
+                        first_line(why)
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -1099,6 +1139,32 @@ mod tests {
             spent: 0.0,
         };
         assert!(uncapped.add(&silent).is_ok());
+    }
+
+    /// **A RUN STOPS WHEN THE MACHINE, NOT THE WORK, KEEPS FAILING.** Three
+    /// attempts in a row that could not run stop it; one that ran — passed or
+    /// failed — starts the count again.
+    #[test]
+    fn three_unrunnable_attempts_in_a_row_stop_the_run() {
+        let broken = |task: &str| EvalResult {
+            error: Some("git fetch (exit 128): no output".into()),
+            ..spent(task, None, None, false)
+        };
+        let mut u = Unrunnable::default();
+        assert!(u.add(&broken("a")).is_ok());
+        assert!(u.add(&broken("b")).is_ok());
+        assert!(
+            u.add(&spent("c", None, None, true)).is_ok(),
+            "a real failure resets"
+        );
+        assert!(u.add(&broken("d")).is_ok());
+        assert!(u.add(&broken("e")).is_ok());
+        let why = u.add(&broken("f")).expect_err("third in a row");
+        assert!(
+            why.contains("3 attempts in a row could not run")
+                && why.contains("git fetch (exit 128)"),
+            "{why}"
+        );
     }
 
     /// **LEARN ON THE PAST, MEASURE ON THE FUTURE.** The halves split by
