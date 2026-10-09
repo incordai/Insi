@@ -348,18 +348,17 @@ fn the_whole_pipeline_runs_and_a_lesson_changes_a_later_result() {
         .map(|(task, ..)| task.as_str())
         .collect();
     assert_eq!(passed_on.len(), 1, "{on:?}");
-    // Both older lessons give the same advice, so the briefing carries it
-    // once; whichever it is, it comes from a learning-half task, never from
-    // a measured one.
+    // Both older lessons give the same advice: one belief, learned twice,
+    // carrying both — each from a learning-half task, never a measured one.
     let older: Vec<&str> = learned_on.iter().map(|(t, ..)| t.as_str()).collect();
     for (task, _, briefed) in &on {
-        assert_eq!(briefed.len(), 1, "{task}: {briefed:?}");
-        assert!(
-            older
-                .iter()
-                .any(|t| briefed[0].starts_with(&format!("{t}-"))),
-            "{task} was briefed with {briefed:?}, not a lesson from {older:?}"
-        );
+        assert_eq!(briefed.len(), 2, "{task}: {briefed:?}");
+        for id in briefed {
+            assert!(
+                older.iter().any(|t| id.starts_with(&format!("{t}-"))),
+                "{task} was briefed with {id}, not a lesson from {older:?}"
+            );
+        }
     }
 
     // The report compares the conditions.
