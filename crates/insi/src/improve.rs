@@ -64,6 +64,9 @@ pub struct Improve<'a> {
     pub holdout_margin: f64,
     pub jobs: usize,
     pub keep: bool,
+    /// The Incord Memory engine told of each change kept and of the run's
+    /// end ([`remember`]); `None` keeps the trail in the audit file only.
+    pub to_memory: Option<std::net::SocketAddr>,
 }
 
 /// Where the loop keeps its state.
@@ -153,7 +156,7 @@ pub fn improve(
             &history,
             l.lessons,
         );
-        let candidate = match propose(l, &ld, step, &prompt)
+        let (candidate, change) = match propose(l, &ld, step, &prompt)
             .and_then(|answer| proposal::parse(&answer, &incumbent))
         {
             Ok(p) => {
@@ -166,7 +169,7 @@ pub fn improve(
                         .strategy(&strategy.name),
                 )?;
                 println!("step {step} [{}]: {} — {}", strategy.name, p.file, p.why);
-                cand
+                (cand, format!("{}: {}", p.file, p.why))
             }
             Err(why) => {
                 audit::append(
@@ -208,6 +211,17 @@ pub fn improve(
         bandit.record(arm, if verdict.accepted { 1.0 } else { 0.0 });
         write_bandit(&ld.bandit(), &bandit)?;
         if verdict.accepted {
+            remember(
+                l,
+                &format!(
+                    "Insi kept harness {} over {} (strategy {}): {change}",
+                    candidate.id(),
+                    incumbent.id(),
+                    strategy.name
+                ),
+                &verdict.why,
+                "accepted",
+            );
             incumbent = candidate;
             inc_select = cand_select;
             accepted += 1;
@@ -227,6 +241,16 @@ pub fn improve(
         )
         .harness(&best),
     )?;
+    remember(
+        l,
+        &format!("Insi's improvement loop left harness {best} as the best"),
+        &format!(
+            "{accepted} change(s) accepted of {} step(s), started at {start}; \
+             putting it in place is a person's decision",
+            l.steps
+        ),
+        "finished",
+    );
     Ok(Outcome {
         start,
         best_dir: ld.harness(&best),
@@ -234,6 +258,27 @@ pub fn improve(
         accepted,
         steps: l.steps,
     })
+}
+
+/// Tell Incord Memory of a change to the harness's state — a change kept, or
+/// the run's end — as a `decision` filed under the tasks' repository
+/// (`insi_memory::incord::publish_decision`). Only these: every proposal and
+/// score stays in `audit.jsonl`, which is the record, so an engine that is
+/// down costs a printed line and never the run. The sibling for lessons is
+/// `insi learn --to-memory` (crates/insi/src/learn.rs).
+fn remember(l: &Improve, decision: &str, why: &str, event: &str) {
+    let Some(addr) = l.to_memory else {
+        return;
+    };
+    let repo = l
+        .select
+        .first()
+        .map(|t| t.source.as_str())
+        .unwrap_or_default();
+    let tags = [format!("loop:{event}")];
+    if let Err(e) = insi_memory::incord::publish_decision(addr, decision, why, repo, &tags) {
+        println!("the {event} decision was not written to memory: {e}");
+    }
 }
 
 /// `harness`'s attempts on `tasks` × seeds, running only the pairs it has

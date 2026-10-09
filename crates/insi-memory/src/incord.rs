@@ -84,21 +84,67 @@ fn verification_name(lesson: &Lesson) -> &'static str {
     }
 }
 
+/// The `lesson_write` call for one decision the improvement loop made about
+/// a harness, filed under the repository at `repo`. `tags` say which loop
+/// event it was; `insi` is always one.
+pub fn decision_request(decision: &str, why: &str, repo: &str, tags: &[String]) -> Value {
+    let mut all = vec!["insi".to_string()];
+    all.extend(tags.iter().cloned());
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "lesson_write",
+            "arguments": {
+                "kind": "decision",
+                "cwd": repo,
+                "record": {
+                    "decision": decision,
+                    "why": why,
+                    "tags": all,
+                },
+            },
+        },
+    })
+}
+
 /// Write one lesson to the engine at `addr`. An error names what went wrong:
 /// the engine unreachable, an HTTP failure, or the tool refusing the item.
+/// Called by `insi learn --to-memory` (crates/insi/src/learn.rs).
 pub fn publish(addr: SocketAddr, lesson: &Lesson, repo: &str) -> Result<(), String> {
-    let body = lesson_write_request(lesson, repo).to_string();
-    let reply = post(addr, RPC_PATH, &body)?;
+    call(addr, &lesson_write_request(lesson, repo), "lesson")
+}
+
+/// Write one loop decision to the engine at `addr`, as [`publish`] does a
+/// lesson. Called by `insi improve --to-memory` (crates/insi/src/improve.rs).
+pub fn publish_decision(
+    addr: SocketAddr,
+    decision: &str,
+    why: &str,
+    repo: &str,
+    tags: &[String],
+) -> Result<(), String> {
+    call(
+        addr,
+        &decision_request(decision, why, repo, tags),
+        "decision",
+    )
+}
+
+/// Send one tool call and read the engine's verdict on the `item`.
+fn call(addr: SocketAddr, request: &Value, item: &str) -> Result<(), String> {
+    let reply = post(addr, RPC_PATH, &request.to_string())?;
     let value: Value = serde_json::from_str(&reply)
         .map_err(|e| format!("the memory engine's reply is not JSON: {e}"))?;
     if let Some(error) = value.get("error") {
-        return Err(format!("the memory engine refused the lesson: {error}"));
+        return Err(format!("the memory engine refused the {item}: {error}"));
     }
     if value["result"]["isError"] == true {
         let why = value["result"]["content"][0]["text"]
             .as_str()
             .unwrap_or("no reason given");
-        return Err(format!("the memory engine refused the lesson: {why}"));
+        return Err(format!("the memory engine refused the {item}: {why}"));
     }
     Ok(())
 }

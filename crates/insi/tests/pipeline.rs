@@ -413,6 +413,55 @@ fn the_whole_pipeline_runs_and_a_lesson_changes_a_later_result() {
     assert_eq!(reused, all.len() - 1);
 }
 
+/// A stand-in Incord Memory engine on a free local port: every JSON-RPC call
+/// it is sent, in order, each answered as stored.
+fn memory_engine() -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = told.clone();
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { continue };
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            let body = loop {
+                let n = socket.read(&mut buf).unwrap_or(0);
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).into_owned();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if body.len() >= len || n == 0 {
+                        break body.to_string();
+                    }
+                } else if n == 0 {
+                    break String::new();
+                }
+            };
+            if let Ok(call) = serde_json::from_str(&body) {
+                seen.lock().expect("seen").push(call);
+            }
+            let reply = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"stored"}],"isError":false}}"#;
+            let _ = socket.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (addr, told)
+}
+
 /// A fake proposer: a `git config` read that prints a fixed proposal.
 fn proposer(dir: &Path, file: &str, content: &str, why: &str) -> String {
     let ini = dir.join("proposal.ini");
@@ -498,17 +547,63 @@ fn the_loop_accepts_a_better_harness_and_rejects_a_worse_one() {
         "Name the markers the checks look for.",
     );
     let harness_arg = harness.to_str().expect("utf8");
-    let first = insi.run(&[
-        "improve",
-        "--harness",
-        harness_arg,
-        "--steps",
-        "2",
-        "--worker",
-        diligent,
-        "--proposer",
-        &better,
-    ]);
+    // The first run tells a stand-in memory engine what it decided.
+    let (engine, told) = memory_engine();
+    let ran = Command::new(&insi.bin)
+        .args([
+            "improve",
+            "--harness",
+            harness_arg,
+            "--steps",
+            "2",
+            "--worker",
+            diligent,
+            "--proposer",
+            &better,
+            "--to-memory",
+        ])
+        .args(&insi.common)
+        .env("INCORD_MEMORY_ADDR", engine.to_string())
+        .current_dir(&insi.cwd)
+        .output()
+        .expect("improve");
+    let first = format!(
+        "{}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert!(ran.status.success(), "{first}");
+    // Two decisions, in order: the change kept, then the run's end — not
+    // the proposal, the refusal or the scores, which stay in the audit file.
+    let decisions: Vec<(String, String)> = told
+        .lock()
+        .expect("told")
+        .iter()
+        .map(|call| {
+            let args = &call["params"]["arguments"];
+            assert_eq!(args["kind"], "decision", "{call}");
+            assert_eq!(args["cwd"], repo.display().to_string(), "{call}");
+            (
+                args["record"]["tags"][1]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                args["record"]["decision"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(decisions.len(), 2, "{decisions:?}");
+    assert_eq!(decisions[0].0, "loop:accepted");
+    assert!(
+        decisions[0]
+            .1
+            .contains("prompt.md: Name the markers the checks look for."),
+        "{decisions:?}"
+    );
+    assert_eq!(decisions[1].0, "loop:finished");
     assert!(
         first.contains("incumbent") && first.contains("0/2 on the selection tasks"),
         "{first}"
@@ -576,6 +671,11 @@ fn the_loop_accepts_a_better_harness_and_rejects_a_worse_one() {
         "{second}"
     );
     assert!(second.contains("no change beat the harness"), "{second}");
+    assert_eq!(
+        told.lock().expect("told").len(),
+        2,
+        "without --to-memory nothing is sent"
+    );
     assert_eq!(
         results(&loop_dir.join("results.jsonl")).len(),
         10,
