@@ -485,6 +485,7 @@ mod tests {
             prompt: "fix: refunds round down\n\nlonger body".into(),
             hidden_tests: vec!["t.test.ts".into()],
             check: vec!["x".into()],
+            public_check: vec![],
             setup: vec![],
             setup_cache: None,
             budget: insi_core::Budget {
@@ -497,6 +498,7 @@ mod tests {
             seed: 0,
             kind: "worker".into(),
             passed: false,
+            public_passed: None,
             timed_out: true,
             wall_secs: 1.0,
             tokens: None,

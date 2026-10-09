@@ -104,6 +104,7 @@ mod tests {
             seed,
             kind: "worker".into(),
             passed,
+            public_passed: None,
             timed_out: false,
             wall_secs: 1.0,
             tokens: None,

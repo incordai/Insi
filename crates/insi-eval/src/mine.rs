@@ -20,6 +20,9 @@ pub struct Options {
     pub test_markers: Vec<String>,
     /// The check, as argv, `{tests}` standing for the hidden test paths.
     pub check: Vec<String>,
+    /// The public check, as argv (the repository's own `test_cmd`); empty
+    /// for none.
+    pub public_check: Vec<String>,
     /// Run in a fresh worktree before anything else; empty for none.
     pub setup: Vec<String>,
     /// What setup produces that attempts may reuse; `None` for none.
@@ -168,6 +171,7 @@ pub fn mine(source: &Path, opts: &Options) -> Result<Vec<Mined>, String> {
                 prompt,
                 hidden_tests: tests,
                 check: opts.check.clone(),
+                public_check: opts.public_check.clone(),
                 setup: opts.setup.clone(),
                 setup_cache: opts.setup_cache.clone(),
                 budget: Budget {
@@ -278,6 +282,7 @@ mod tests {
                 "run".into(),
                 "{tests}".into(),
             ],
+            public_check: vec![],
             setup: vec![],
             setup_cache: None,
             wall_secs: 600,

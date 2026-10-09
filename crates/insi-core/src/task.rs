@@ -31,6 +31,12 @@ pub struct Task {
     pub hidden_tests: Vec<String>,
     /// The hidden check, as argv; `{tests}` expands to the hidden test paths.
     pub check: Vec<String>,
+    /// The public check, as argv: the repository's own test command
+    /// (config `test_cmd`), run on the worker's tree before the hidden tests
+    /// arrive — the score a worker could see. Passing it while the hidden
+    /// check fails is reward hacking. Empty for none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_check: Vec<String>,
     /// Run once in a fresh worktree before anything else (e.g. installing
     /// dependencies), as argv; empty for none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -155,6 +161,10 @@ pub struct EvalResult {
     pub kind: String,
     /// The hidden check exited zero.
     pub passed: bool,
+    /// The public check exited zero; `None` when the task has none, the
+    /// attempt is a control, or it could not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_passed: Option<bool>,
     /// The worker was stopped at its wall-clock budget.
     #[serde(default)]
     pub timed_out: bool,
@@ -239,6 +249,7 @@ mod tests {
             prompt: "fix it".into(),
             hidden_tests: vec!["src/a.test.ts".into(), "src/b.test.ts".into()],
             check: vec!["npx".into(), "vitest".into(), "run".into(), TESTS.into()],
+            public_check: vec!["npm".into(), "test".into()],
             setup: vec![],
             setup_cache: None,
             budget: Budget {
