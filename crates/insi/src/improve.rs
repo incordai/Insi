@@ -102,6 +102,10 @@ pub struct Outcome {
     pub best_dir: PathBuf,
     pub accepted: u32,
     pub steps: u32,
+    /// One line per change kept in this run, with the benchmark's verdict:
+    /// the evidence a pull request of the best harness carries
+    /// (crates/insi/src/harness_pr.rs).
+    pub kept: Vec<String>,
 }
 
 /// Run the loop. `on_result` sees every attempt before it is saved (to
@@ -142,6 +146,7 @@ pub fn improve(
     );
 
     let mut accepted = 0;
+    let mut kept = Vec::new();
     for step in first_step..first_step + l.steps {
         let Some(arm) = bandit.pick() else {
             return Err("no strategies to propose with".to_string());
@@ -211,17 +216,14 @@ pub fn improve(
         bandit.record(arm, if verdict.accepted { 1.0 } else { 0.0 });
         write_bandit(&ld.bandit(), &bandit)?;
         if verdict.accepted {
-            remember(
-                l,
-                &format!(
-                    "Insi kept harness {} over {} (strategy {}): {change}",
-                    candidate.id(),
-                    incumbent.id(),
-                    strategy.name
-                ),
-                &verdict.why,
-                "accepted",
+            let decision = format!(
+                "Insi kept harness {} over {} (strategy {}): {change}",
+                candidate.id(),
+                incumbent.id(),
+                strategy.name
             );
+            remember(l, &decision, &verdict.why, "accepted");
+            kept.push(format!("step {step}: {decision} — {}", verdict.why));
             incumbent = candidate;
             inc_select = cand_select;
             accepted += 1;
@@ -257,6 +259,7 @@ pub fn improve(
         best,
         accepted,
         steps: l.steps,
+        kept,
     })
 }
 

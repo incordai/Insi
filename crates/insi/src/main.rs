@@ -17,7 +17,7 @@
 //! insi issue    --number N [--repo <dir>] [--worker "<cmd {prompt}>"] [--lessons <file>] [--ready]
 //! insi improve  --harness <dir> --tasks <dir> --private <dir> [--steps N] [--seeds N] [--margin M]
 //!               [--holdout-margin M] [--worker "<cmd {prompt}>"] [--proposer "<cmd {prompt}>"]
-//!               [--only id,id] [--results <file>] [--jobs N] [--max-dollars D] [--keep] [--to-memory]
+//!               [--only id,id] [--results <file>] [--jobs N] [--max-dollars D] [--keep] [--to-memory] [--pr]
 //! ```
 //!
 //! Commands are written as one string and split on spaces; an argument with
@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod context;
+mod harness_pr;
 mod hook;
 mod improve;
 mod init;
@@ -71,10 +72,12 @@ const USAGE: &str = "usage:
                 (work a GitHub issue labelled trusted_issue_label; a draft PR if test_cmd passes)
   insi improve  --harness <dir> --tasks <dir> --private <dir> [--steps N] [--seeds N] [--margin M]
                 [--holdout-margin M] [--worker \"<cmd {prompt}>\"] [--proposer \"<cmd {prompt}>\"]
-                [--only id,id] [--results <file>] [--jobs N] [--max-dollars D] [--keep] [--to-memory]
+                [--only id,id] [--results <file>] [--jobs N] [--max-dollars D] [--keep] [--to-memory] [--pr]
                 (the improvement loop: one proposed harness change per step, kept only when it
                 beats the incumbent on the older fair tasks by M and is not worse on the newer;
-                --to-memory also files each change kept, and the run's end, in Incord Memory)
+                --to-memory also files each change kept, and the run's end, in Incord Memory;
+                --pr opens the best harness as a draft pull request on the harness folder's
+                repository, through gh's login, after the same credential scan as insi issue)
 
 In a repository with .insi/config.toml (write one with `insi init`), the
 check, setup, prefix and budget come from it, and --tasks/--private default
@@ -903,6 +906,32 @@ fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String>
             outcome.best_dir.display(),
             ld.audit().display()
         );
+        if flags.has("pr") {
+            let start = insi_loop::harness::Harness::read(&ld.harness(&outcome.start))?;
+            let best = insi_loop::harness::Harness::read(&outcome.best_dir)?;
+            let opened = harness_pr::open(
+                &harness_pr::HarnessPr {
+                    harness: &harness,
+                    start: &start,
+                    best: &best,
+                    kept: &outcome.kept,
+                    audit: &ld.audit(),
+                    work_root: &work.root,
+                },
+                &issue::GhCli,
+            )?;
+            match opened {
+                issue::Outcome::Opened { url, branch } => {
+                    println!("draft pull request {url} (branch {branch})")
+                }
+                issue::Outcome::Kept { branch, why } => {
+                    println!("branch {branch} kept on this machine, nothing pushed: {why}")
+                }
+            }
+        }
+    }
+    if flags.has("pr") && outcome.best == outcome.start {
+        println!("no pull request: no change was kept");
     }
     Ok(())
 }
