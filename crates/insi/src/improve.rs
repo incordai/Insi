@@ -382,7 +382,7 @@ fn propose(l: &Improve, ld: &LoopDir, step: u32, prompt: &str) -> Result<String,
     std::fs::write(room.join("prompt.txt"), prompt)
         .map_err(|e| format!("{}: {e}", room.display()))?;
     let ran = process::run(
-        &l.proposer.render(prompt)?,
+        &l.proposer.render_in(prompt, &room)?,
         &room,
         Duration::from_secs(PROPOSE_SECS),
     )?;

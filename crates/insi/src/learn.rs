@@ -134,7 +134,7 @@ fn write_one(l: &Learn, task: &Task, r: &EvalResult) -> Result<Lesson, String> {
     let room = l.work.root.join("learn").join(&id);
     std::fs::create_dir_all(&room).map_err(|e| format!("{}: {e}", room.display()))?;
     let ran = process::run(
-        &l.worker.render(&prompt)?,
+        &l.worker.render_in(&prompt, &room)?,
         &room,
         Duration::from_secs(WRITE_SECS),
     )?;

@@ -547,7 +547,7 @@ fn work_and_check(
             .collect::<Vec<_>>()
             .join("\n\n");
         keep(artifacts, WORKER_PROMPT, &prompt)?;
-        let argv = a.worker.render(&prompt)?;
+        let argv = a.worker.render_in(&prompt, tree)?;
         let env: Vec<(&str, &std::ffi::OsStr)> = a
             .harness
             .map(|h| (HARNESS_ENV, h.as_os_str()))
@@ -633,6 +633,9 @@ fn worker_diff(tree: &Path, worker: &Worker) -> Result<String, String> {
         "--no-color".to_string(),
         "--".to_string(),
         ".".to_string(),
+        // Where a prompt too long for a command line was handed over
+        // (`Worker::render_in`): Insi's, not the worker's change.
+        format!(":(exclude){}", insi_core::config::TASK_FILE),
     ];
     args.extend(
         worker

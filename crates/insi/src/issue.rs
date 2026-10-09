@@ -309,7 +309,7 @@ fn work_in(
     );
     let wall = Duration::from_secs(cfg.wall_secs.unwrap_or(1800));
     let started = std::time::Instant::now();
-    let ran = step(cfg, &run.worker.render(&prompt)?, tree, wall)?;
+    let ran = step(cfg, &run.worker.render_in(&prompt, tree)?, tree, wall)?;
     let worker_secs = started.elapsed().as_secs();
     let tokens = insi_eval::run::reported(&ran.stdout).map(|(_, usage)| usage.total());
 

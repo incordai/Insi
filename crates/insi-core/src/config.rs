@@ -282,7 +282,47 @@ impl Worker {
             .map(|a| a.replace(PROMPT, prompt))
             .collect())
     }
+
+    /// The command for one prompt run in `dir`: [`Self::render`], except that
+    /// a prompt too long for a command line ([`ARGV_PROMPT_MAX`]) is written
+    /// whole to [`TASK_FILE`] in `dir` and the worker is told to read it.
+    /// Measured: Insi's lesson writer once handed incode a prompt past
+    /// Windows' 32,767-character command line, which failed to start at all
+    /// (os error 206). Called for every worker Insi runs: attempts
+    /// (insi-eval run.rs), the lesson writer (insi learn.rs), the proposer
+    /// (insi improve.rs) and issue work (insi issue.rs).
+    pub fn render_in(&self, prompt: &str, dir: &Path) -> Result<Vec<String>, String> {
+        if prompt.len() <= ARGV_PROMPT_MAX {
+            return self.render(prompt);
+        }
+        let path = dir.join(TASK_FILE);
+        std::fs::write(&path, prompt).map_err(|e| {
+            format!(
+                "the task is {} bytes, more than a command line can carry, and could not \
+                 be written to {} for the worker to read: {e}",
+                prompt.len(),
+                path.display()
+            )
+        })?;
+        self.render(&format!(
+            "This task is {} bytes, more than a command line can carry, so the whole of it \
+             is in the file `{TASK_FILE}` in your working folder ({}). Read that file in \
+             full, from its first line to its last, before doing anything else: it is the \
+             task, and what it asks is what you do.",
+            prompt.len(),
+            path.display()
+        ))
+    }
 }
+
+/// The longest prompt passed on a command line, in bytes (each at least one
+/// UTF-16 unit, so this is under Windows' 32,767-character limit with room
+/// for the program, its flags and quoting).
+pub const ARGV_PROMPT_MAX: usize = 24_000;
+
+/// Where [`Worker::render_in`] writes a prompt too long for a command line,
+/// in the worker's folder; left out of an attempt's recorded diff.
+pub const TASK_FILE: &str = ".insi-task.md";
 
 impl Config {
     /// Read `<repo>/.insi/config.toml`; a repo without one has the defaults.
@@ -516,5 +556,72 @@ mod tests {
             .contains("{prompt}"));
         let empty = Worker::command(vec![]);
         assert!(empty.render("x").is_err());
+    }
+
+    /// **A PROMPT TOO LONG FOR A COMMAND LINE STILL REACHES THE WORKER.**
+    /// Handed straight to the program, a 200 KB prompt cannot even start it
+    /// (os error 206 on Windows, E2BIG elsewhere): the failure the lesson
+    /// writer hit. Through `render_in` the program starts, is told where the
+    /// task is, and the file holds every byte of it; a short prompt still goes
+    /// on the command line and writes nothing.
+    #[test]
+    fn a_prompt_too_long_for_a_command_line_reaches_the_worker_whole() {
+        let dir = std::env::temp_dir().join(format!(
+            "insi-render-in-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        // A real program that keeps what it was given: git writes the
+        // argument into a config file.
+        let worker = Worker::command(
+            ["git", "config", "--file", "told.ini", "task.text", PROMPT]
+                .map(String::from)
+                .to_vec(),
+        );
+        let spawn = |argv: &[String]| {
+            std::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(&dir)
+                .output()
+        };
+        let prompt = format!("Write one lesson.\n{}\nTHE END", "x".repeat(200_000));
+
+        let direct = worker.render(&prompt).expect("renders");
+        assert!(
+            spawn(&direct).is_err(),
+            "the failure being fixed: too long to start"
+        );
+
+        let argv = worker.render_in(&prompt, &dir).expect("renders");
+        let ran = spawn(&argv).expect("starts");
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let told = std::fs::read_to_string(dir.join("told.ini")).expect("told");
+        assert!(
+            told.contains(TASK_FILE) && told.contains("Read that file in full"),
+            "{told}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(TASK_FILE)).expect("task file"),
+            prompt,
+            "every byte of the task"
+        );
+
+        std::fs::remove_file(dir.join(TASK_FILE)).expect("clear");
+        assert_eq!(
+            worker.render_in("fix it", &dir).expect("renders"),
+            worker.render("fix it").expect("renders")
+        );
+        assert!(
+            !dir.join(TASK_FILE).exists(),
+            "a short prompt writes no file"
+        );
     }
 }
