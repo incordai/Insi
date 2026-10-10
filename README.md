@@ -1,4 +1,5 @@
-# Insi
+# Insi <img width="256" height="256" alt="spinner-transparent" src="https://github.com/user-attachments/assets/5548318d-30b0-4d60-a3a7-97269dbb5d61" />
+
 
 **Does your coding agent actually get better at your repository? Insi
 measures it, and then works to make it so, with a person deciding what
