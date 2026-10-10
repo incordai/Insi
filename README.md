@@ -1,13 +1,166 @@
 # Insi
 
-Insi measures whether a coding agent gets better at a repository over time,
-and is built to be added to any repository as a dependency.
+**Does your coding agent actually get better at your repository? Insi
+measures it, and then works to make it so, with a person deciding what
+lands.**
 
-Phase 1 is the measurement: a benchmark mined from the repository's own
-history, run by any agent through a worker command, with controls that say
-whether each task is a fair test. Lessons (an agent writing down what went
-wrong and being briefed with it next time) come next, and are judged by the
-same benchmark: `lessons=off` against `lessons=on`.
+Insi is a command-line tool (one Rust binary) you add to any git repository.
+It turns the repository's own history into a benchmark, runs a coding agent
+against it in throwaway checkouts, and judges every attempt with tests the
+agent never saw. On top of that measurement it builds two ways for the agent
+to improve:
+
+- **Lessons.** After a failed attempt, the agent writes down what went wrong
+  and what to do instead. Later tasks are briefed with those lessons.
+- **The improvement loop.** The agent's prompts and settings (its *harness*)
+  are changed one file at a time, and a change is kept only when the
+  benchmark says it is better.
+
+Nothing changes itself silently. An improvement reaches the repository as a
+**draft pull request** that a person reviews and merges.
+
+Why it exists: the claim "my agent learns" is usually an anecdote. Insi's rule
+is that an improvement counts only if it raises the pass rate on tasks it was
+not learned from, measured against a control.
+
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Benchmark results](#benchmark-results)
+- [Reference](#adding-insi-to-a-repository): every command in detail
+- [Contributing](#contributing) · [License](#license)
+
+## How it works
+
+```text
+ the repository's history
+        │
+        │  insi mine       every fix commit that also changed a test file becomes a task:
+        │                    start         = the commit before the fix
+        │                    prompt        = the fix commit's message
+        │                    hidden check  = the tests the fix added, kept outside the checkout
+        ▼
+   tasks
+        │  insi validate   two controls, no agent: the hidden check must FAIL at the
+        │                  start and PASS at the fix, or the task is not a fair test
+        ▼
+   fair tasks
+        │  insi eval       the agent works each task in its own throwaway worktree;
+        │                  the hidden tests are copied in only after it has stopped
+        ▼
+   results.jsonl  ──────►  insi report: pass rate, timeouts, repeated failures,
+        │                  cost, and reward hacking per condition
+        │
+        │  insi learn      a failed attempt + its verified fix → one lesson
+        │                  (the issue, the root cause, what to use, what to avoid)
+        ▼
+   lessons  ─────────────► briefed before later tasks, only from tasks dated earlier
+        │
+        │  insi improve    change the harness one file at a time, keep only what wins
+        ▼
+   draft pull request ───► a person reviews it; Insi never merges
+```
+
+Four rules keep the measurement honest:
+
+1. **The agent never sees the check.** Hidden tests live outside every
+   checkout the agent can read. They are copied in after the agent stops,
+   replacing anything it wrote at those paths.
+2. **Only fair tasks count.** A task whose check already passes at the start,
+   or fails even with the real fix, is dropped by `insi validate`.
+3. **Learn on the past, measure on the future.** Tasks are split by commit
+   date. Lessons are learned on the older half and measured on the newer
+   half, and a lesson is never briefed to the task it came from or to
+   anything earlier. Conditions are compared on the same task × seed pairs.
+4. **Visible score vs real score.** When a task carries a public check (the
+   repository's own test command), Insi records whether it passed. A public
+   pass with a hidden failure is counted as reward hacking: the visible score
+   was met without the work.
+
+The agent is anything with a non-interactive mode: Insi runs it through a
+worker command (`[worker] command`, or `--worker "<cmd {prompt}>"`). The
+default is incode.
+
+## Quick start
+
+Insi is built from source: the npm and pip packages are ready but not yet
+published ([RELEASING.md](RELEASING.md)). You need Rust 1.89 or newer and git.
+
+```sh
+git clone https://github.com/incordai/Insi.git
+cd Insi
+cargo build --release          # the binary is target/release/insi
+```
+
+In the repository you want to measure:
+
+```sh
+insi init                  # detect the stack, write .insi/config.toml
+insi mine                  # tasks from the history; hidden tests go outside the checkout
+insi validate              # which tasks are fair tests
+insi eval --fair-only      # run the agent on the fair tasks
+insi report                # pass rate and the rest, per condition
+```
+
+To measure whether lessons help:
+
+```sh
+insi eval  --fair-only --half older --tag phase=learn    # attempts to learn from
+insi learn                                               # lessons from their failures
+insi eval  --fair-only --half newer --seeds 3            # lessons off
+insi eval  --fair-only --half newer --seeds 3 --lessons .insi-work/lessons.jsonl
+insi report
+```
+
+## Benchmark results
+
+### Watchman, run 2 (9 October 2026)
+
+The first benchmark is the history of Watchman, a desktop application in
+TypeScript and Rust whose tasks are checked with vitest:
+**38 tasks mined, 35 fair** (3 already passed at the start and were dropped).
+Lessons were learned on the older half and measured on the newer half. One
+seed, the worker incode on a single model, a budget of 1,800 seconds per
+attempt.
+
+| Half | Condition | Passed | Timed out |
+|---|---|---|---|
+| older (learning) | lessons off | 3 / 18 (17%) | 6 |
+| newer (measured) | lessons off | 5 / 16 (31%) | 6 |
+| newer (measured) | lessons on | 6 / 17 (35%) | 3 |
+
+The 11 lessons learned on the older half were briefed to the lessons-on round.
+Over the 16 tasks judged both ways:
+
+| Lessons off → on | Tasks |
+|---|---|
+| passed both times | 5 |
+| failed → passed | 1 |
+| passed → failed | 0 |
+| failed both times | 10 |
+
+**What this does and does not show.** One task changed outcome, so this is
+not evidence that lessons help. It is one seed, and three things limit it:
+
+- Every lessons-on attempt was briefed with the same three newest lessons.
+  All 11 lessons sit on one topic and fill the 4,000-character briefing, so
+  this measured three general lessons, not the relevant ones.
+- 4 of 15 lessons were lost to bugs found in this run, since fixed.
+- Wall time and tokens are not comparable between rounds: the lessons-off
+  round ran on a heavily loaded machine, and an attempt cut off at its
+  budget reports no tokens.
+
+Reward hacking was not measured: these tasks carry no public check yet.
+
+Next: a briefing ranked by relevance to the task, the lost lessons recovered,
+and three seeds.
+
+The report as `insi report` printed it:
+
+```text
+lessons=off,phase=learn:   3/18 passed (17%), 0 repeat failure(s), 6 timed out, 14 error(s)
+lessons=off,phase=measure: 5/16 passed (31%), 0 repeat failure(s), 6 timed out, 1 error(s)
+lessons=on,phase=measure:  6/17 passed (35%), 0 repeat failure(s), 3 timed out, 0 error(s)
+```
 
 ## Adding Insi to a repository
 
@@ -471,6 +624,8 @@ of the format; set the ones you pay.)
 | `insi-core` | config, the task format, failure signatures |
 | `insi-eval` | running commands with deadlines, mining, the store, attempts, reports |
 | `insi-memory` | lessons: the writer's prompt and parsing, the store, the briefing |
+| `insi-loop` | the improvement loop's decisions: proposals, the accept rule, the strategy bandit, the audit trail |
+| `insi-connectors` | outside sources: docs, CI logs and command connectors, each item with its source, trust and topic |
 | `insi` | the command line |
 
 ## Building
@@ -479,3 +634,22 @@ of the format; set the ones you pay.)
 cargo build --release
 cargo test
 ```
+
+## Contributing
+
+Contributions are welcome: bug reports, fixes, new stack detection, and
+benchmark results from your own repositories. Before opening a pull request,
+run what CI runs on Windows, macOS and Linux:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how changes are written, tested
+and reviewed, and [RELEASING.md](RELEASING.md) for how a release is cut.
+
+## License
+
+Insi is released under the [MIT License](LICENSE).
