@@ -7,7 +7,7 @@ name = "insi"
 version = "0.1.0"
 description = "Insi: self-improving coding agents, governed by humans. Runs the insi binary for this platform."
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.9"
 dependencies = []
 

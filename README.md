@@ -651,6 +651,11 @@ cargo test
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how changes are written, tested
 and reviewed, and [RELEASING.md](RELEASING.md) for how a release is cut.
 
+Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes,
+never in a public issue. Everyone taking part follows the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
-Insi is released under the [MIT License](LICENSE).
+Insi is released under the [Apache License 2.0](LICENSE), copyright 2026
+Incord AI. See [NOTICE](NOTICE).

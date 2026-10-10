@@ -8,7 +8,7 @@ edition = "2021"
 # 1.89: std's File::lock, which keeps two insi runs sharing a work folder
 # out of each other's way.
 rust-version = "1.89"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/incordai/insi"
 
 # Three dependencies, all already in incode's lock at these versions (see

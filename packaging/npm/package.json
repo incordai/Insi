@@ -2,7 +2,7 @@
   "name": "insi",
   "version": "0.1.0",
   "description": "Insi: self-improving coding agents, governed by humans. Installs the insi binary for this platform.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/incordai/insi.git"
