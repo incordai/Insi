@@ -1,4 +1,4 @@
-# Insi <img width="256" height="256" alt="spinner-transparent" src="https://github.com/user-attachments/assets/5548318d-30b0-4d60-a3a7-97269dbb5d61" />
+# Insi <img src="https://github.com/user-attachments/assets/5548318d-30b0-4d60-a3a7-97269dbb5d61" width="30px" alt="incordai" />
 
 
 **Does your coding agent actually get better at your repository? Insi
