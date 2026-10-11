@@ -1,7 +1,9 @@
 //! `insi mcp`: Insi's lessons for any agent, over MCP on stdin/stdout.
 //!
-//! The read side only. An agent asks; nothing it sends can write a lesson,
-//! run a command or touch a repository. Two tools:
+//! The read side only. An agent asks; nothing it sends can write a lesson or
+//! change a repository. `insi_context` runs what `insi context` runs (`gh`
+//! for CI, the configured connectors); the lesson tools run nothing. Three
+//! tools:
 //!
 //! - `insi_briefing` — what earlier work in a repository taught, as the text
 //!   `insi eval --lessons` puts in front of a task.

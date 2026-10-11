@@ -173,10 +173,12 @@ fn post(addr: SocketAddr, path: &str, body: &str) -> Result<String, String> {
         .take(4 * 1024 * 1024)
         .read_to_end(&mut raw)
         .map_err(|e| format!("reading the memory engine's reply: {e}"))?;
-    let text = String::from_utf8_lossy(&raw);
-    let (head, rest) = text
-        .split_once("\r\n\r\n")
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
         .ok_or("the memory engine's reply has no HTTP header")?;
+    let head = String::from_utf8_lossy(&raw[..split]);
+    let body = &raw[split + 4..];
     let status: u16 = head
         .split_whitespace()
         .nth(1)
@@ -185,33 +187,39 @@ fn post(addr: SocketAddr, path: &str, body: &str) -> Result<String, String> {
     if !(200..300).contains(&status) {
         return Err(format!(
             "the memory engine answered {status}: {}",
-            rest.chars().take(300).collect::<String>()
+            String::from_utf8_lossy(body)
+                .chars()
+                .take(300)
+                .collect::<String>()
         ));
     }
     let chunked = head
         .lines()
         .any(|l| l.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
     Ok(if chunked {
-        dechunk(rest)
+        dechunk(body)
     } else {
-        rest.to_string()
+        String::from_utf8_lossy(body).into_owned()
     })
 }
 
-/// A chunked body, joined.
-fn dechunk(mut rest: &str) -> String {
-    let mut out = String::new();
-    while let Some((size, after)) = rest.split_once("\r\n") {
+/// A chunked body, joined. Chunk sizes count bytes, and a chunk may end
+/// inside a multi-byte character, so the bytes are joined before decoding.
+fn dechunk(mut rest: &[u8]) -> String {
+    let mut out = Vec::new();
+    while let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") {
+        let size = String::from_utf8_lossy(&rest[..eol]);
         let Ok(n) = usize::from_str_radix(size.trim(), 16) else {
             break;
         };
+        let after = &rest[eol + 2..];
         if n == 0 || after.len() < n {
             break;
         }
-        out.push_str(&after[..n]);
-        rest = after[n..].trim_start_matches("\r\n");
+        out.extend_from_slice(&after[..n]);
+        rest = after[n..].strip_prefix(b"\r\n").unwrap_or(&after[n..]);
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -333,6 +341,21 @@ mod tests {
 
     #[test]
     fn a_chunked_body_is_joined() {
-        assert_eq!(dechunk("4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"), "Wikipedia");
+        assert_eq!(
+            dechunk(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"),
+            "Wikipedia"
+        );
+    }
+
+    /// A chunk boundary inside a multi-byte character joins, not panics.
+    #[test]
+    fn a_chunk_may_split_a_character() {
+        let body = "caf\u{e9}".as_bytes();
+        let mut chunked = b"4\r\n".to_vec();
+        chunked.extend_from_slice(&body[..4]);
+        chunked.extend_from_slice(b"\r\n1\r\n");
+        chunked.extend_from_slice(&body[4..]);
+        chunked.extend_from_slice(b"\r\n0\r\n\r\n");
+        assert_eq!(dechunk(&chunked), "caf\u{e9}");
     }
 }

@@ -86,8 +86,9 @@ fn normalize_word(word: &str) -> String {
         .find(|c: char| c.is_alphanumeric() || c == '/' || c == '\\' || c == '.' || c == '~')
         .unwrap_or(word.len());
     let end = word
-        .rfind(|c: char| c.is_alphanumeric() || c == '/' || c == '\\')
-        .map_or(start, |i| i + 1)
+        .char_indices()
+        .rfind(|&(_, c)| c.is_alphanumeric() || c == '/' || c == '\\')
+        .map_or(start, |(i, c)| i + c.len_utf8())
         .max(start);
     let (lead, core, tail) = (&word[..start], &word[start..end], &word[end..]);
     let core = if core.is_empty() {
@@ -141,6 +142,15 @@ fn replace_digit_runs(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A word ending in a non-ASCII letter keeps its letter, not a panic.
+    #[test]
+    fn a_word_ending_in_a_non_ascii_letter_is_kept() {
+        assert_eq!(
+            normalize("caf\u{e9} \u{6e2c}\u{8a66} (gr\u{fc}\u{df})"),
+            "caf\u{e9} \u{6e2c}\u{8a66} (gr\u{fc}\u{df})"
+        );
+    }
 
     /// **ONE MISTAKE, ONE SIGNATURE.** Two runs of the same failure differ in
     /// line numbers, temp paths, hashes and timestamps; their signatures do

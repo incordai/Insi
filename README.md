@@ -107,8 +107,8 @@ To measure whether lessons help:
 ```sh
 insi eval  --fair-only --half older --tag phase=learn    # attempts to learn from
 insi learn                                               # lessons from their failures
-insi eval  --fair-only --half newer --seeds 3            # lessons off
-insi eval  --fair-only --half newer --seeds 3 --lessons .insi-work/lessons.jsonl
+insi eval  --fair-only --half newer --seeds 3 --tag phase=measure   # lessons off
+insi eval  --fair-only --half newer --seeds 3 --tag phase=measure --lessons .insi-work/lessons.jsonl
 insi report
 ```
 
@@ -155,7 +155,8 @@ Reward hacking was not measured: these tasks carry no public check yet.
 Next: a briefing ranked by relevance to the task, the lost lessons recovered,
 and three seeds.
 
-The report as `insi report` printed it:
+The report as `insi report` printed it (cut after the error count; the
+current version also prints each condition's tokens, wall time and cost):
 
 ```text
 lessons=off,phase=learn:   3/18 passed (17%), 0 repeat failure(s), 6 timed out, 14 error(s)
@@ -331,8 +332,8 @@ The measurement, end to end:
 insi validate ... --jobs 2                                 # which tasks are fair
 insi eval  ... --fair-only --half older --tag phase=learn  # attempts to learn from
 insi learn ...                                              # lessons from their failures
-insi eval  ... --fair-only --half newer --seeds 3          # lessons=off
-insi eval  ... --fair-only --half newer --seeds 3 --lessons <work>/lessons.jsonl
+insi eval  ... --fair-only --half newer --seeds 3 --tag phase=measure   # lessons=off
+insi eval  ... --fair-only --half newer --seeds 3 --tag phase=measure --lessons <work>/lessons.jsonl
 insi report
 ```
 
@@ -385,13 +386,16 @@ holds and sends no token.
 ## Lessons for any agent: `insi mcp`
 
 `insi mcp` serves the lessons over MCP on stdin/stdout, so an agent Insi did
-not start can use them too. It only reads: nothing an agent sends writes a
-lesson or runs anything.
+not start can use them too. Nothing an agent sends writes a lesson or
+changes the repository. The lesson tools only read the lessons file;
+`insi_context` gathers outside context as `insi context` does, so it runs
+`gh` for failed CI runs and the commands configured as `[[connectors]]`.
 
 | Tool | What it answers |
 |---|---|
 | `insi_briefing {topic, before?, max_chars?}` | the briefing for a repository: verified lessons consolidated as for `insi eval` (beliefs first), as actions |
 | `insi_lessons_for_error {error, topic?}` | lessons whose failure looked like this one: the error is normalized (paths, numbers, colour codes gone) and matched line by line |
+| `insi_context {topic, query?}` | outside context for a topic, as [`insi context`](#outside-context-insi-context) gives it: docs, failed CI runs and configured connectors, each with its trust |
 
 `insi init` registers it for the repository: a missing `.mcp.json` is written
 with the entry `claude mcp add --scope project insi -- insi mcp` would add,
@@ -588,8 +592,6 @@ and an unknown key is refused.
 ```toml
 topic = "app"
 test_cmd = ["npm", "test"]
-protected = ["src/auth/**"]
-eval_tasks = "evals/tasks"
 private_checks = "../insi-private/app"
 trusted_issue_label = "insi"
 

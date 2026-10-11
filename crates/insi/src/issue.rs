@@ -313,8 +313,15 @@ fn work_in(
     let worker_secs = started.elapsed().as_secs();
     let tokens = insi_eval::run::reported(&ran.stdout).map(|(_, usage)| usage.total());
 
-    // Everything but the files the harness writes for itself.
-    let mut add = vec!["add".to_string(), "--all".into(), "--".into(), ".".into()];
+    // Everything but the files the harness writes for itself, and the prompt
+    // a long one was handed over in.
+    let mut add = vec![
+        "add".to_string(),
+        "--all".into(),
+        "--".into(),
+        ".".into(),
+        format!(":(exclude){}", insi_core::config::TASK_FILE),
+    ];
     add.extend(
         run.worker
             .own_files
@@ -575,6 +582,41 @@ mod tests {
         assert!(
             pushed.contains("Greeting is rude"),
             "the worker never saw the issue: {pushed}"
+        );
+    }
+
+    /// **A LONG PROMPT'S FILE IS NOT PUBLISHED.** A prompt too long for a
+    /// command line reaches the worker as a file in its tree; the branch
+    /// pushed for the draft carries the worker's change, not that file.
+    #[test]
+    fn a_long_prompts_file_stays_out_of_the_pushed_branch() {
+        let (work, origin) = repo();
+        let mut long = issue(&["insi"], true);
+        long.body = "Say hello. ".repeat(3000);
+        let hub = FakeHub {
+            issue: long,
+            created: RefCell::new(Vec::new()),
+        };
+        let cfg = config(&["git", "--version"]);
+        let worker = rewriting_worker();
+        work_issue(
+            &Run {
+                repo: &work,
+                number: 42,
+                config: &cfg,
+                worker: &worker,
+                work_root: &temp("long-root"),
+                briefing: "",
+                draft: true,
+            },
+            &hub,
+        )
+        .expect("worked");
+        let files = git(&origin, &["ls-tree", "--name-only", "insi/issue-42"]).expect("tree");
+        assert!(files.contains("greet.txt"), "{files}");
+        assert!(
+            !files.contains(insi_core::config::TASK_FILE),
+            "the prompt file was pushed: {files}"
         );
     }
 
