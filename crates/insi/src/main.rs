@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! insi init     [--repo <dir>] [--check "<cmd {tests}>"] [--setup "<cmd>"] [--force]
+//!               [--no-mcp] [--no-hooks] [--no-ci]
 //! insi mine     [--source <repo>] [--tasks <dir>] [--private <dir>] [--check "<cmd {tests}>"]
 //!               [--setup "<cmd>"] [--public-check "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
 //! insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
@@ -48,6 +49,9 @@ use insi_memory::store::{FileLessons, LessonStore};
 
 const USAGE: &str = "usage:
   insi init     [--repo <dir>] [--check \"<cmd {tests}>\"] [--setup \"<cmd>\"] [--force]
+                [--no-mcp] [--no-hooks] [--no-ci]
+                (each --no-* keeps that file out of the repository: .mcp.json,
+                .claude/settings.json, .github/workflows/insi.yml)
   insi mine     [--source <repo>] [--tasks <dir>] [--private <dir>] [--check \"<cmd {tests}>\"]
                 [--setup \"<cmd>\"] [--public-check \"<cmd>\"] [--prefix <name>] [--limit N] [--wall-secs N]
                 (the public check, default test_cmd, runs on the worker's tree before the
@@ -335,7 +339,18 @@ fn store(flags: &Flags) -> Result<Store, String> {
 fn init_cmd(flags: &Flags) -> Result<(), String> {
     let repo = PathBuf::from(flags.get("repo").unwrap_or("."));
     let setup = flags.has("setup").then(|| flags.argv("setup"));
-    let done = init::init(&repo, flags.argv("check"), setup, flags.has("force"))?;
+    let writes = init::Writes {
+        mcp: !flags.has("no-mcp"),
+        hooks: !flags.has("no-hooks"),
+        ci: !flags.has("no-ci"),
+    };
+    let done = init::init(
+        &repo,
+        flags.argv("check"),
+        setup,
+        flags.has("force"),
+        writes,
+    )?;
     match &done.detected {
         Some(d) => println!("detected: {}", d.stack),
         None => println!("detected: nothing; using the commands given"),
@@ -358,34 +373,40 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
         println!("added {} to .gitignore", init::WORK_IGNORE);
     }
     match done.mcp {
-        init::Registration::Written => {
+        Some(init::Registration::Written) => {
             println!(
                 "wrote {}: agents here can ask `insi mcp` for lessons",
                 init::MCP_FILE
             )
         }
-        init::Registration::AlreadyThere => {
+        Some(init::Registration::AlreadyThere) => {
             println!("{} already registers insi", init::MCP_FILE)
         }
-        init::Registration::LeftAlone => println!(
+        Some(init::Registration::LeftAlone) => println!(
             "{} exists and was not changed; to register Insi in it:\n  {}",
+            init::MCP_FILE,
+            init::MCP_ADD
+        ),
+        None => println!(
+            "{} not written (--no-mcp); to register Insi later:\n  {}",
             init::MCP_FILE,
             init::MCP_ADD
         ),
     }
     match done.hooks {
-        init::Registration::Written => println!(
+        Some(init::Registration::Written) => println!(
             "wrote {}: `insi hook` shows lessons before an edit and after a failed command",
             init::SETTINGS_FILE
         ),
-        init::Registration::AlreadyThere => {
+        Some(init::Registration::AlreadyThere) => {
             println!("{} already runs insi hook", init::SETTINGS_FILE)
         }
-        init::Registration::LeftAlone => println!(
+        Some(init::Registration::LeftAlone) => println!(
             "{} exists and was not changed; to have Insi's lessons shown, merge in:\n{}",
             init::SETTINGS_FILE,
             serde_json::to_string_pretty(&init::hooks_file()).unwrap_or_default()
         ),
+        None => println!("{} not written (--no-hooks)", init::SETTINGS_FILE),
     }
     match done.ci {
         Some(init::Registration::Written) => println!(
@@ -400,6 +421,7 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
             "{} exists and was not changed; Insi's pull requests are checked only by what it runs",
             init::CI_FILE
         ),
+        None if !writes.ci => println!("{} not written (--no-ci)", init::CI_FILE),
         None => println!("no CI workflow written: no stack detected to set one up for"),
     }
     println!(

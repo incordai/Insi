@@ -28,7 +28,8 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_cmd: Vec<String>,
     /// The hidden check `insi mine` gives each task, as argv; `{tests}`
-    /// stands for the task's hidden test files.
+    /// stands for the task's hidden test files, `{test_stems}` for their
+    /// cargo test targets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub check: Vec<String>,
     /// Run in a fresh worktree before anything else (installing

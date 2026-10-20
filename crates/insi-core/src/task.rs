@@ -29,7 +29,8 @@ pub struct Task {
     pub prompt: String,
     /// Repo-relative paths of the hidden test files.
     pub hidden_tests: Vec<String>,
-    /// The hidden check, as argv; `{tests}` expands to the hidden test paths.
+    /// The hidden check, as argv; `{tests}` expands to the hidden test paths,
+    /// `{test_stems}` to their cargo test targets ([`Task::check_argv`]).
     pub check: Vec<String>,
     /// The public check, as argv: the repository's own test command
     /// (config `test_cmd`), run on the worker's tree before the hidden tests
@@ -96,14 +97,47 @@ pub struct Budget {
 /// The placeholder in [`Task::check`] that stands for the hidden test paths.
 pub const TESTS: &str = "{tests}";
 
+/// The placeholder in [`Task::check`] that stands for cargo's integration-test
+/// targets: `cargo test {test_stems}` runs only the test binaries the hidden
+/// files are, instead of the whole suite.
+pub const TEST_STEMS: &str = "{test_stems}";
+
+/// The cargo integration-test target each of `paths` is — `tests/<stem>.rs`
+/// or `tests/<stem>/main.rs` — or `None` when any one is not.
+///
+/// All or nothing: a hidden file anywhere else (a unit test in `src/`, a
+/// helper module under `tests/`, a member crate's `tests/`) is only run by
+/// the whole suite, and running the targets that ARE named without it would
+/// leave that file unchecked.
+fn test_targets(paths: &[String]) -> Option<Vec<&str>> {
+    paths
+        .iter()
+        .map(|path| {
+            let rest = path.strip_prefix("tests/")?;
+            match rest.split_once('/') {
+                None => rest.strip_suffix(".rs").filter(|stem| !stem.is_empty()),
+                Some((dir, "main.rs")) if !dir.is_empty() => Some(dir),
+                Some(_) => None,
+            }
+        })
+        .collect()
+}
+
 impl Task {
-    /// The check's argv with `{tests}` expanded: an argument that is exactly
-    /// `{tests}` becomes one argument per test file.
+    /// The check's argv with its placeholders expanded: an argument that is
+    /// exactly `{tests}` becomes one argument per test file, and one that is
+    /// exactly `{test_stems}` becomes `--test <stem>` per cargo test target —
+    /// or nothing, so the whole suite runs, when a hidden file is not one.
     pub fn check_argv(&self) -> Vec<String> {
         let mut out = Vec::new();
         for arg in &self.check {
             if arg == TESTS {
                 out.extend(self.hidden_tests.iter().cloned());
+            } else if arg == TEST_STEMS {
+                for stem in test_targets(&self.hidden_tests).unwrap_or_default() {
+                    out.push("--test".to_string());
+                    out.push(stem.to_string());
+                }
             } else {
                 out.push(arg.replace(TESTS, &self.hidden_tests.join(" ")));
             }
@@ -265,6 +299,36 @@ mod tests {
             task().check_argv(),
             ["npx", "vitest", "run", "src/a.test.ts", "src/b.test.ts"]
         );
+    }
+
+    /// **`{test_stems}` RUNS ONLY THE HIDDEN TEST BINARIES — AND THE WHOLE
+    /// SUITE WHEN IT CANNOT.** Every hidden file a cargo integration test:
+    /// one `--test` each. Any one elsewhere (a unit test in `src/`, a helper
+    /// under `tests/`): nothing, so `cargo test` runs everything and that file
+    /// is still checked.
+    #[test]
+    fn test_stems_name_cargo_targets_or_fall_back_to_the_whole_suite() {
+        let rust = |hidden: &[&str]| Task {
+            hidden_tests: hidden.iter().map(|h| h.to_string()).collect(),
+            check: vec!["cargo".into(), "test".into(), TEST_STEMS.into()],
+            ..task()
+        };
+        assert_eq!(
+            rust(&["tests/parse.rs", "tests/cli/main.rs"]).check_argv(),
+            ["cargo", "test", "--test", "parse", "--test", "cli"]
+        );
+        for mixed in [
+            &["tests/parse.rs", "src/lib.rs"][..],
+            &["tests/common/mod.rs"][..],
+            &["crates/core/tests/parse.rs"][..],
+            &["tests/.rs"][..],
+        ] {
+            assert_eq!(
+                rust(mixed).check_argv(),
+                ["cargo", "test"],
+                "{mixed:?} is not all cargo test targets"
+            );
+        }
     }
 
     #[test]

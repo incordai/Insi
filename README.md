@@ -197,8 +197,18 @@ keeps its folder out of the cache. On Watchman, `npm ci` was 4 to 5.5
 minutes of every attempt. Written for a Node project with a lockfile; a
 `--setup` given by hand gets none, since it may make something else.
 
+For Rust the check is `cargo test {test_stems}`: when every hidden test is
+an integration-test target (`tests/<stem>.rs` or `tests/<stem>/main.rs`),
+`{test_stems}` becomes `--test <stem>` for each and only those binaries run;
+when any one is elsewhere (a unit test in `src/`, a helper under `tests/`) it
+becomes nothing, and the whole suite runs so that file is still checked.
+
 Every key can be edited; `--check` and `--setup` replace what was detected,
-and an existing config is never overwritten without `--force`. With a
+and an existing config is never overwritten without `--force`. Besides
+`.insi/config.toml` and the `.gitignore` line, init writes three files other
+tools read — `.mcp.json`, `.claude/settings.json` and
+`.github/workflows/insi.yml` — and prints each one it wrote; `--no-mcp`,
+`--no-hooks` and `--no-ci` keep any of them out. With a
 config, `mine` needs no flags, and every command finds its tasks in
 `<private_checks>/tasks` and the hidden tests in `<private_checks>/hidden`,
 outside the checkout a worker works in.

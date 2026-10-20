@@ -95,13 +95,15 @@ pub fn detect(repo: &Path) -> Option<Detected> {
         });
     }
     if has("Cargo.toml") {
-        // A test file of its own in `tests/` is its own test binary; the
-        // whole suite runs it along with everything else.
+        // A test file of its own in `tests/` is its own test binary:
+        // `{test_stems}` runs just those when every hidden file is one, and
+        // falls back to the whole suite otherwise — on a large crate, the
+        // whole suite was most of each check's time.
         return Some(Detected {
             stack: "rust".to_string(),
             kind: Stack::Rust,
             setup: Vec::new(),
-            check: argv(&["cargo", "test"]),
+            check: argv(&["cargo", "test", insi_core::task::TEST_STEMS]),
             test_cmd: argv(&["cargo", "test"]),
             setup_cache: None,
         });
@@ -134,6 +136,18 @@ pub fn detect(repo: &Path) -> Option<Detected> {
     None
 }
 
+/// Which of the files outside `.insi/` init may write into the repository.
+///
+/// Each is a file other tools read — Claude Code its MCP servers and hooks,
+/// GitHub its workflows — so a person can keep any of them out
+/// (`--no-mcp`, `--no-hooks`, `--no-ci`) rather than delete it afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Writes {
+    pub mcp: bool,
+    pub hooks: bool,
+    pub ci: bool,
+}
+
 /// What `init` did, for the person who ran it.
 #[derive(Debug)]
 pub struct Initialised {
@@ -141,9 +155,12 @@ pub struct Initialised {
     pub config_path: std::path::PathBuf,
     pub gitignore_changed: bool,
     pub config: Config,
-    pub mcp: Registration,
-    pub hooks: Registration,
-    /// The CI workflow; `None` when no stack was detected to set one up for.
+    /// `None` when `--no-mcp` kept it out.
+    pub mcp: Option<Registration>,
+    /// `None` when `--no-hooks` kept it out.
+    pub hooks: Option<Registration>,
+    /// The CI workflow; `None` when `--no-ci` kept it out, or no stack was
+    /// detected to set one up for.
     pub ci: Option<Registration>,
 }
 
@@ -313,14 +330,16 @@ fn repo_name(repo: &Path) -> String {
         .unwrap_or_else(|| "repo".to_string())
 }
 
-/// Write `.insi/config.toml` in `repo`. `check` and `setup`, when given,
-/// replace what was detected. Refused when a config is already there and
-/// `force` is not set: a person's edits are not overwritten by a guess.
+/// Write `.insi/config.toml` in `repo`, and the registrations `writes` allows.
+/// `check` and `setup`, when given, replace what was detected. Refused when a
+/// config is already there and `force` is not set: a person's edits are not
+/// overwritten by a guess.
 pub fn init(
     repo: &Path,
     check: Vec<String>,
     setup: Option<Vec<String>>,
     force: bool,
+    writes: Writes,
 ) -> Result<Initialised, String> {
     let dir = repo.join(DIR);
     let config_path = dir.join(FILE);
@@ -377,19 +396,27 @@ pub fn init(
     )
     .map_err(|e| format!("{}: {e}", config_path.display()))?;
     let gitignore_changed = ignore_work_folder(repo)?;
-    let mcp = register(
-        &repo.join(MCP_FILE),
-        mcp_registered,
-        &json_text(&mcp_file())?,
-    )?;
-    let hooks = register(
-        &repo.join(SETTINGS_FILE),
-        hooks_registered,
-        &json_text(&hooks_file())?,
-    )?;
+    let mcp = if writes.mcp {
+        Some(register(
+            &repo.join(MCP_FILE),
+            mcp_registered,
+            &json_text(&mcp_file())?,
+        )?)
+    } else {
+        None
+    };
+    let hooks = if writes.hooks {
+        Some(register(
+            &repo.join(SETTINGS_FILE),
+            hooks_registered,
+            &json_text(&hooks_file())?,
+        )?)
+    } else {
+        None
+    };
     let ci = match &ci_text {
-        Some(text) => Some(register(&repo.join(CI_FILE), ci_registered, text)?),
-        None => None,
+        Some(text) if writes.ci => Some(register(&repo.join(CI_FILE), ci_registered, text)?),
+        _ => None,
     };
     Ok(Initialised {
         detected,
@@ -431,6 +458,13 @@ fn ignore_work_folder(repo: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every registration allowed, as `insi init` with no `--no-*` flag.
+    const ALL: Writes = Writes {
+        mcp: true,
+        hooks: true,
+        ci: true,
+    };
 
     fn repo_with(files: &[(&str, &str)]) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -478,7 +512,7 @@ mod tests {
             detect(&repo_with(&[("Cargo.toml", "")]))
                 .expect("rust")
                 .check,
-            ["cargo", "test"]
+            ["cargo", "test", "{test_stems}"]
         );
         assert_eq!(
             detect(&repo_with(&[("requirements.txt", "")]))
@@ -505,7 +539,7 @@ mod tests {
             ("package-lock.json", "{}"),
             (".gitignore", "node_modules"),
         ]);
-        let done = init(&repo, vec![], None, false).expect("init");
+        let done = init(&repo, vec![], None, false, ALL).expect("init");
         assert!(done.gitignore_changed);
         let config = Config::load(&repo).expect("reads back");
         assert_eq!(config, done.config);
@@ -529,13 +563,16 @@ mod tests {
         let ignore = std::fs::read_to_string(repo.join(".gitignore")).expect("ignore");
         assert!(ignore.starts_with("node_modules\n") && ignore.contains(WORK_IGNORE));
 
-        assert!(init(&repo, vec![], None, false).is_err(), "would overwrite");
-        let again = init(&repo, argv(&["make", "check"]), Some(vec![]), true).expect("forced");
+        assert!(
+            init(&repo, vec![], None, false, ALL).is_err(),
+            "would overwrite"
+        );
+        let again = init(&repo, argv(&["make", "check"]), Some(vec![]), true, ALL).expect("forced");
         assert!(!again.gitignore_changed, "the line is not added twice");
         assert_eq!(Config::load(&repo).expect("reads").check, ["make", "check"]);
 
         let unknown = repo_with(&[("notes.txt", "")]);
-        assert!(init(&unknown, vec![], None, false)
+        assert!(init(&unknown, vec![], None, false, ALL)
             .expect_err("no stack")
             .contains("--check"));
     }
@@ -548,9 +585,9 @@ mod tests {
     #[test]
     fn insi_mcp_is_registered_without_touching_an_existing_file() {
         let fresh = repo_with(&[("Cargo.toml", "")]);
-        let done = init(&fresh, vec![], None, false).expect("init");
-        assert_eq!(done.mcp, Registration::Written);
-        assert_eq!(done.hooks, Registration::Written);
+        let done = init(&fresh, vec![], None, false, ALL).expect("init");
+        assert_eq!(done.mcp, Some(Registration::Written));
+        assert_eq!(done.hooks, Some(Registration::Written));
         let hooks: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(fresh.join(SETTINGS_FILE)).expect("settings"),
         )
@@ -569,18 +606,18 @@ mod tests {
                 "type": "stdio", "command": "insi", "args": ["mcp"], "env": {}
             }}})
         );
-        let again = init(&fresh, vec![], None, true).expect("forced");
-        assert_eq!(again.mcp, Registration::AlreadyThere);
-        assert_eq!(again.hooks, Registration::AlreadyThere);
+        let again = init(&fresh, vec![], None, true, ALL).expect("forced");
+        assert_eq!(again.mcp, Some(Registration::AlreadyThere));
+        assert_eq!(again.hooks, Some(Registration::AlreadyThere));
 
         let theirs = r#"{"mcpServers":{"memory":{"command":"mem"}}}"#;
         let their_settings = r#"{"permissions":{"allow":["Bash(ls)"]}}"#;
         let other = repo_with(&[("Cargo.toml", ""), (MCP_FILE, theirs)]);
         std::fs::create_dir_all(other.join(".claude")).expect("dir");
         std::fs::write(other.join(SETTINGS_FILE), their_settings).expect("settings");
-        let done = init(&other, vec![], None, false).expect("init");
-        assert_eq!(done.mcp, Registration::LeftAlone);
-        assert_eq!(done.hooks, Registration::LeftAlone);
+        let done = init(&other, vec![], None, false, ALL).expect("init");
+        assert_eq!(done.mcp, Some(Registration::LeftAlone));
+        assert_eq!(done.hooks, Some(Registration::LeftAlone));
         assert_eq!(
             std::fs::read_to_string(other.join(MCP_FILE)).expect("file"),
             theirs
@@ -602,7 +639,7 @@ mod tests {
             ("package.json", r#"{"devDependencies":{"vitest":"^3"}}"#),
             ("package-lock.json", "{}"),
         ]);
-        let done = init(&node, vec![], None, false).expect("init");
+        let done = init(&node, vec![], None, false, ALL).expect("init");
         assert_eq!(done.ci, Some(Registration::Written));
         assert_eq!(done.config.test_cmd, ["npm", "test"]);
         let ci = std::fs::read_to_string(node.join(CI_FILE)).expect("workflow");
@@ -620,7 +657,7 @@ mod tests {
             ci.find("npm ci") < ci.find("npm test"),
             "setup runs before the tests"
         );
-        let again = init(&node, vec![], None, true).expect("forced");
+        let again = init(&node, vec![], None, true, ALL).expect("forced");
         assert_eq!(again.ci, Some(Registration::AlreadyThere));
 
         let theirs = "name: ci\non: push\n";
@@ -630,7 +667,7 @@ mod tests {
         assert!(rust_ci.contains("          cargo test\n"));
         std::fs::create_dir_all(rust.join(".github/workflows")).expect("dir");
         std::fs::write(rust.join(CI_FILE), theirs).expect("theirs");
-        let done = init(&rust, vec![], None, false).expect("init");
+        let done = init(&rust, vec![], None, false, ALL).expect("init");
         assert_eq!(done.ci, Some(Registration::LeftAlone));
         assert_eq!(
             std::fs::read_to_string(rust.join(CI_FILE)).expect("file"),
@@ -638,9 +675,35 @@ mod tests {
         );
 
         let unknown = repo_with(&[("notes.txt", "")]);
-        let done = init(&unknown, argv(&["make", "check"]), None, false).expect("init");
+        let done = init(&unknown, argv(&["make", "check"]), None, false, ALL).expect("init");
         assert_eq!(done.ci, None);
         assert!(!unknown.join(CI_FILE).exists());
+    }
+
+    /// **A PERSON CAN KEEP EACH FILE OUTSIDE `.insi/` OUT OF THEIR REPO.**
+    /// `--no-mcp`, `--no-hooks` and `--no-ci` each leave their file unwritten
+    /// and the others as they would be; the config is written either way.
+    #[test]
+    fn init_writes_only_the_registrations_it_is_allowed() {
+        let none = Writes {
+            mcp: false,
+            hooks: false,
+            ci: false,
+        };
+        let repo = repo_with(&[("Cargo.toml", "")]);
+        let done = init(&repo, vec![], None, false, none).expect("init");
+        assert_eq!((done.mcp, done.hooks, done.ci), (None, None, None));
+        for file in [MCP_FILE, SETTINGS_FILE, CI_FILE] {
+            assert!(!repo.join(file).exists(), "{file} was written anyway");
+        }
+        assert!(done.config_path.is_file(), "the config is still written");
+
+        let only_ci = repo_with(&[("Cargo.toml", "")]);
+        let done = init(&only_ci, vec![], None, false, Writes { ci: true, ..none }).expect("init");
+        assert_eq!(done.ci, Some(Registration::Written));
+        assert!(only_ci.join(CI_FILE).is_file());
+        assert!(!only_ci.join(MCP_FILE).exists());
+        assert!(!only_ci.join(SETTINGS_FILE).exists());
     }
 
     /// **A COMMAND REACHES THE SHELL AS THE ARGUMENTS IT WAS.** Arguments
