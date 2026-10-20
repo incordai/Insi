@@ -542,6 +542,7 @@ mod tests {
             },
         };
         let failed = EvalResult {
+            isolation: None,
             task: "shop-1".into(),
             seed: 0,
             kind: "worker".into(),

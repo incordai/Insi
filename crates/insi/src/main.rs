@@ -1068,7 +1068,7 @@ fn report_cmd(results: &Path) -> Result<(), String> {
     }
     for (condition, t) in &by {
         println!(
-            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s, {}{}",
+            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s, {}{}{}",
             t.passed,
             t.attempts - t.errors,
             t.pass_rate() * 100.0,
@@ -1082,6 +1082,15 @@ fn report_cmd(results: &Path) -> Result<(), String> {
                 format!(
                     ", reward hacking {}/{} (public check passed, hidden failed)",
                     t.reward_hacks, t.public_judged
+                )
+            } else {
+                String::new()
+            },
+            if t.unsandboxed > 0 {
+                format!(
+                    ", {} attempt(s) unsandboxed (the worker could read the answer on disk; \
+                     set [worker] sandbox)",
+                    t.unsandboxed
                 )
             } else {
                 String::new()
@@ -1134,6 +1143,7 @@ mod tests {
             phases.insert("worker".to_string(), 1.0);
         }
         EvalResult {
+            isolation: None,
             task: task.into(),
             seed: 0,
             kind: "worker".into(),
@@ -1216,6 +1226,7 @@ mod tests {
     #[test]
     fn three_unrunnable_attempts_in_a_row_stop_the_run() {
         let broken = |task: &str| EvalResult {
+            isolation: None,
             error: Some("git fetch (exit 128): no output".into()),
             ..spent(task, None, None, false)
         };

@@ -241,6 +241,26 @@ pub struct EvalResult {
     /// verdict: why setup's output was not reused or not kept, for one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// How far a worker attempt was kept from the answer ([`Isolation`]).
+    /// Absent on controls, and on results written before it was recorded,
+    /// which were not isolated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<Isolation>,
+}
+
+/// What stood between a worker and the task's answer.
+///
+/// The answer exists in three places a worker could reach: the fix commit
+/// (in any git history that includes it), the source repository's own
+/// checkout (usually at a commit after the fix), and the hidden tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Isolation {
+    /// `"base-only"`: the worker's repository holds the base commit and
+    /// nothing after it, so no git command in it can show the fix.
+    pub history: String,
+    /// Whether the worker ran inside `[worker] sandbox`, which is what can
+    /// keep it out of the source checkout and the hidden tests on disk.
+    pub sandboxed: bool,
 }
 
 /// Tokens a worker reported, by kind.

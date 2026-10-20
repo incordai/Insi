@@ -109,6 +109,12 @@ fn untrusted() -> crate::Trust {
 
 /// What a sandbox command must contain: where the work's folder goes.
 pub const TREE: &str = "{tree}";
+/// In `[worker] sandbox`: where the hidden tests are kept.
+pub const PRIVATE: &str = "{private}";
+/// In `[worker] sandbox`: Insi's work folder.
+pub const WORK: &str = "{work}";
+/// In `[worker] sandbox`: the task's source repository.
+pub const SOURCE: &str = "{source}";
 
 /// A command every step of issue work runs inside, e.g. a container:
 ///
@@ -230,6 +236,31 @@ pub struct Worker {
     /// code. The check still runs on the whole worktree.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub own_files: Vec<String>,
+    /// A command the worker step of an eval attempt runs inside, with the
+    /// worker's own command appended, e.g. `sbx`:
+    ///
+    /// ```toml
+    /// [worker]
+    /// sandbox = ["sbx", "run", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
+    ///            "--deny-read", "{source}", "--deny-read", "{private}", "--"]
+    /// ```
+    ///
+    /// `{tree}` is the attempt's folder (required), `{private}` where the
+    /// hidden tests are kept, `{work}` Insi's work folder, and `{source}`
+    /// the task's source repository (a local folder). Without it a worker can
+    /// read the source checkout, usually at a commit after the fix, and the
+    /// hidden tests on disk; the report counts such attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sandbox: Vec<String>,
+}
+
+/// Where an eval attempt's places are, for [`Worker::sandboxed`].
+#[derive(Debug, Clone, Copy)]
+pub struct Places<'a> {
+    pub tree: &'a Path,
+    pub private: &'a Path,
+    pub work: &'a Path,
+    pub source: &'a str,
 }
 
 impl Worker {
@@ -257,6 +288,7 @@ impl Worker {
             // incode's state, the spec set its spec step writes when the gate
             // is on (incode src/spec.rs SPEC_SET), and the backups its edit
             // hook keeps beside each edited file.
+            sandbox: Vec::new(),
             own_files: [
                 ".incode/**",
                 ".incord/**",
@@ -276,7 +308,49 @@ impl Worker {
         Worker {
             command,
             own_files: Vec::new(),
+            sandbox: Vec::new(),
         }
+    }
+
+    /// Why `sandbox` cannot be used, if it cannot.
+    pub fn sandbox_problem(&self) -> Option<String> {
+        if self.sandbox.is_empty() {
+            return None;
+        }
+        if self.sandbox[0].trim().is_empty() {
+            return Some("worker.sandbox: name the program to run".to_string());
+        }
+        if !self.sandbox.iter().any(|a| a.contains(TREE)) {
+            return Some(format!(
+                "worker.sandbox has no {TREE} argument, so the attempt's folder would never be in it"
+            ));
+        }
+        None
+    }
+
+    /// `argv` wrapped in `sandbox`, with its places filled in; `argv`
+    /// unchanged when there is no sandbox.
+    ///
+    /// # Errors
+    /// When the sandbox names `{source}` and the task's source is not a
+    /// local folder: a path that does not exist could not be hidden.
+    pub fn sandboxed(&self, argv: Vec<String>, places: &Places) -> Result<Vec<String>, String> {
+        if self.sandbox.is_empty() {
+            return Ok(argv);
+        }
+        if self.sandbox.iter().any(|a| a.contains(SOURCE)) && !Path::new(places.source).is_dir() {
+            return Err(format!(
+                "worker.sandbox names {SOURCE}, but the task's source `{}` is not a local folder",
+                places.source
+            ));
+        }
+        let fill = |a: &String| {
+            a.replace(TREE, &places.tree.display().to_string())
+                .replace(PRIVATE, &places.private.display().to_string())
+                .replace(WORK, &places.work.display().to_string())
+                .replace(SOURCE, places.source)
+        };
+        Ok(self.sandbox.iter().map(fill).chain(argv).collect())
     }
 
     /// The command for one prompt. Refused when the program is missing or no
@@ -361,6 +435,9 @@ impl Config {
             return Err(why);
         }
         if let Some(why) = config.sandbox.as_ref().and_then(Sandbox::problem) {
+            return Err(why);
+        }
+        if let Some(why) = config.worker.as_ref().and_then(Worker::sandbox_problem) {
             return Err(why);
         }
         let mut sources = std::collections::BTreeSet::new();
@@ -472,6 +549,56 @@ mod tests {
 
     /// **A SANDBOX HOLDS THE WORK'S FOLDER, OR IS REFUSED.** The step's
     /// command follows the sandbox's, with `{tree}` filled in.
+    #[test]
+    fn a_worker_sandbox_needs_the_tree_and_fills_its_places() {
+        let err = Config::parse(
+            "[worker]\ncommand = [\"w\", \"{prompt}\"]\nsandbox = [\"sbx\", \"run\", \"--\"]",
+        )
+        .expect_err("no {tree}");
+        assert!(err.contains("{tree}"), "{err}");
+        let cfg = Config::parse(
+            "[worker]\ncommand = [\"w\", \"{prompt}\"]\n\
+             sandbox = [\"sbx\", \"-w\", \"{tree}\", \"--deny-read\", \"{private}\", \"--deny-read\", \"{work}/attempts\", \"--\"]",
+        )
+        .expect("parses");
+        let worker = cfg.worker();
+        let places = Places {
+            tree: Path::new("/w/runs/t"),
+            private: Path::new("/p"),
+            work: Path::new("/w"),
+            source: "https://example.invalid/repo.git",
+        };
+        let argv = worker
+            .sandboxed(vec!["w".into(), "go".into()], &places)
+            .expect("wraps");
+        assert_eq!(
+            argv,
+            [
+                "sbx",
+                "-w",
+                "/w/runs/t",
+                "--deny-read",
+                "/p",
+                "--deny-read",
+                "/w/attempts",
+                "--",
+                "w",
+                "go"
+            ]
+        );
+        // {source} must be a folder that exists, or it could not be hidden.
+        let mut with_source = worker.clone();
+        with_source.sandbox.push("{source}".into());
+        assert!(with_source.sandboxed(vec![], &places).is_err());
+        // No sandbox: the command as it was.
+        assert_eq!(
+            Worker::incode()
+                .sandboxed(vec!["x".into()], &places)
+                .expect("plain"),
+            ["x"]
+        );
+    }
+
     #[test]
     fn a_sandbox_wraps_each_command_around_the_work_folder() {
         let config = Config::parse(

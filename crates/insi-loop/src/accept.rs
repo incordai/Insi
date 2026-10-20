@@ -100,6 +100,7 @@ mod tests {
 
     fn r(task: &str, seed: u32, passed: bool) -> EvalResult {
         EvalResult {
+            isolation: None,
             task: task.into(),
             seed,
             kind: "worker".into(),
@@ -130,6 +131,7 @@ mod tests {
             r("b", 0, true),
             r("c", 0, true),
             EvalResult {
+                isolation: None,
                 error: Some("setup failed".into()),
                 ..r("d", 0, false)
             },
