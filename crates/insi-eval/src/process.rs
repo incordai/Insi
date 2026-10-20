@@ -55,6 +55,7 @@ pub fn run_with(
     let mut command = Command::new(&program);
     // Before `env`, so a variable the caller sets on purpose still wins.
     detach_from_parent_session(&mut command, std::env::vars_os().map(|(name, _)| name));
+    detach_from_caller_repository(&mut command);
     command
         .args(args)
         .envs(env.iter().copied())
@@ -196,6 +197,31 @@ fn detach_from_parent_session(
     }
 }
 
+/// Variables that point git at a repository other than the one in the folder
+/// it runs in. A process started from a git hook inherits `GIT_DIR` (and
+/// often `GIT_INDEX_FILE`), and Insi installs hooks: every `git` a worker, a
+/// check or Insi itself then ran would act on the hook's repository instead
+/// of the attempt's worktree.
+pub const GIT_REDIRECTS: [&str; 9] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
+/// Start `command` in the repository of the folder it runs in, whatever the
+/// caller's environment points git at ([`GIT_REDIRECTS`]).
+pub fn detach_from_caller_repository(command: &mut Command) {
+    for name in GIT_REDIRECTS {
+        command.env_remove(name);
+    }
+}
+
 /// The program to start. On Windows a bare name like `npx` is a `.cmd`
 /// script, which `Command` does not look for on its own: PATH is searched
 /// for each executable extension, as a shell would.
@@ -271,6 +297,21 @@ mod tests {
 
     /// **A COMMAND NEVER INHERITS THE AGENT SESSION INSI RUNS IN** — and keeps
     /// the credentials it needs to start one of its own.
+    #[test]
+    fn a_command_ignores_git_redirects_from_its_caller() {
+        let mut command = Command::new("worker");
+        detach_from_caller_repository(&mut command);
+        for name in GIT_REDIRECTS {
+            assert_eq!(
+                fate(&command, name),
+                Some(None),
+                "{name} reached the command"
+            );
+        }
+        // Configuration through the environment is not a redirect.
+        assert_eq!(fate(&command, "GIT_CONFIG_COUNT"), None);
+    }
+
     #[test]
     fn a_command_is_detached_from_the_parent_session_and_keeps_its_credentials() {
         let parent = [

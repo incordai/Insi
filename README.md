@@ -61,11 +61,15 @@ not learned from, measured against a control.
    draft pull request ───► a person reviews it; Insi never merges
 ```
 
-Four rules keep the measurement honest:
+Four rules keep the measurement honest (all eleven, with how each is enforced, are in [docs/MEASUREMENT.md](docs/MEASUREMENT.md)):
 
-1. **The agent never sees the check.** Hidden tests live outside every
-   checkout the agent can read. They are copied in after the agent stops,
-   replacing anything it wrote at those paths.
+1. **The agent never sees the check.** Hidden tests live outside the
+   attempt's folder and are copied in after the agent stops, replacing
+   anything it wrote at those paths. The attempt's repository holds the base
+   commit and nothing after it, so no git command shows the fix. What is on
+   disk (the source checkout, the hidden tests) is kept from the agent by
+   [`[worker] sandbox`](#keeping-the-worker-from-the-answer); `insi report`
+   counts the attempts that ran without one.
 2. **Only fair tasks count.** A task whose check already passes at the start,
    or fails even with the real fix, is dropped by `insi validate`.
 3. **Learn on the past, measure on the future.** Tasks are split by commit
@@ -389,6 +393,25 @@ insi issue --number 42            # from the repository's folder
   network. Committing, the scan and the push stay outside it, on this
   machine. A sandbox with no `{tree}` is refused.
 
+  Without a container,
+  [`sbx`](https://github.com/incordai/Incode/tree/main/crates/sandbox) does
+  the same with the OS's own sandbox (Landlock on Linux, Seatbelt on
+  macOS). In the example below:
+  - writes are confined to the worktree and the agent's own state;
+  - the network only reaches the hosts listed;
+  - the session and `GIT_DIR` variables are stripped;
+  - the step is killed after the wall limit.
+
+  It refuses to run when the machine cannot enforce the policy, instead of
+  running unconfined:
+
+  ```toml
+  [sandbox]
+  command = ["sbx", "run", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
+             "--allow-host", "api.anthropic.com", "--allow-host", "registry.npmjs.org",
+             "--wall", "1800", "--"]
+  ```
+
 GitHub is reached through the `gh` CLI, which holds the login: Insi reads,
 holds and sends no token.
 
@@ -621,6 +644,37 @@ counts are read from incode's `stream-json` result; another worker's attempts
 are timed but not counted in tokens. `--spec-gate=off` keeps incode from
 writing its spec documents before each already-scoped task (it needs an incode
 that has the flag; an older one refuses it by name).
+
+### Keeping the worker from the answer
+
+The answer to a task is in three places: the fix commit, the source
+repository's checkout (usually at a commit after the fix), and the hidden
+tests. A worker attempt's repository is a shallow fetch of the base commit
+alone, so git can't reach the first one. The other two are on disk, and any
+worker with a shell can read them. Measured: a worker that only ran
+`cp ../../../src/lib.rs src/lib.rs` passed its task, and the reward-hacking
+check didn't catch it, because it passed the hidden tests for real.
+
+`[worker] sandbox` runs the worker step inside a command and fills in its
+places:
+- `{tree}`: the attempt's folder (required);
+- `{private}`: the hidden tests;
+- `{work}`: Insi's work folder;
+- `{source}`: the task's source, which must be a local folder.
+
+With [`sbx`](https://github.com/incordai/Incode/tree/main/crates/sandbox):
+
+```toml
+[worker]
+command = ["incode", "-t", "{prompt}", "--output-format", "stream-json", "--spec-gate=off"]
+sandbox = ["sbx", "run", "-q", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
+           "-w", "~/.incode", "--deny-read", "{source}", "--deny-read", "{private}", "--"]
+```
+
+The same cheating worker then fails, as it should: the copy is refused.
+Each result records `isolation` (`history: "base-only"`, `sandboxed`).
+`insi report` adds `N attempt(s) unsandboxed` to a condition whose passes are
+not proof of the work.
 
 Every command Insi starts — the worker, the checks, `gh` — is started without
 the variables of the agent session Insi itself runs in (`CLAUDECODE`,

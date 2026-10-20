@@ -1,9 +1,16 @@
 //! One attempt at one task, in a throwaway worktree.
 //!
-//! The worktree comes from Insi's OWN clone of the task's source, under the
+//! The tree comes from Insi's OWN clone of the task's source, under the
 //! work folder, so the source repository — often someone's live checkout —
 //! is only ever read. The hidden tests are copied in after the worker has
-//! stopped, so nothing the worker did could have read or edited them.
+//! stopped, so nothing the worker did could have edited them.
+//!
+//! A worker attempt gets a repository of its own holding the base commit
+//! and nothing else ([`Work::isolated_tree`]): a worktree of the clone shares
+//! its history, and `git log --all` there showed the fix commit — the task's
+//! answer — to any worker that looked. What git cannot show, the disk still
+//! can (the source checkout, the hidden tests); `[worker] sandbox` is what
+//! keeps a worker out of those, and each result records which it had.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -204,7 +211,42 @@ impl Work {
                 ],
             )?;
         }
+        // A worker's tree fetches one commit by id from here
+        // ([`Self::isolated_tree`]); upload-pack refuses an id no ref names
+        // unless this is set.
+        git(&dir, &["config", "uploadpack.allowAnySHA1InWant", "true"])?;
         Ok(dir)
+    }
+
+    /// A tree for a worker attempt: a repository of its own whose history is
+    /// the base commit alone, so no git command in it can reach the fix.
+    ///
+    /// A shallow fetch of that one commit from Insi's clone, not a worktree
+    /// (which shares every object) and not alternates (whose objects
+    /// `git cat-file --batch-all-objects` would still list). It costs a copy
+    /// of the base commit's files' objects per attempt; that is the price of
+    /// a measurement whose answer is not one command away.
+    fn isolated_tree(&self, clone: &Path, commit: &str, name: &str) -> Result<PathBuf, String> {
+        let path = self.root.join("runs").join(name);
+        self.drop_worktree(clone, &path);
+        std::fs::create_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        git(&path, &["init", "--quiet"])?;
+        git(
+            &path,
+            &[
+                "fetch",
+                "--quiet",
+                "--depth",
+                "1",
+                "--no-tags",
+                &file_url(clone),
+                commit,
+            ],
+        )?;
+        git(&path, &["checkout", "--quiet", "--detach", "FETCH_HEAD"])?;
+        // It names the clone it came from; the worker has no use for that.
+        let _ = std::fs::remove_file(path.join(".git").join("FETCH_HEAD"));
+        Ok(path)
     }
 
     /// A fresh worktree at `commit`. Only git's bookkeeping holds the lock:
@@ -274,6 +316,17 @@ impl Work {
     }
 }
 
+/// A local folder as a `file://` URL: a plain path makes git use its local
+/// transport, which ignores `--depth`.
+fn file_url(dir: &Path) -> String {
+    let path = dir.display().to_string().replace('\\', "/");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
 /// The folder a source is cloned into: the source's own last name, then a
 /// hash of the whole source, so two sources with one name stay apart. Not the
 /// whole path spelt out: under a work folder that is itself deep, a checkout
@@ -332,6 +385,7 @@ pub const HARNESS_ENV: &str = "INSI_HARNESS";
 pub fn attempt(work: &Work, store: &Store, a: &Attempt) -> EvalResult {
     let started = std::time::Instant::now();
     let mut result = EvalResult {
+        isolation: None,
         task: a.task.id.clone(),
         seed: a.seed,
         kind: a.kind.name().to_string(),
@@ -389,7 +443,11 @@ fn attempt_into(
     result.artifacts = Some(artifacts.display().to_string());
     let (clone, tree) = timed(result, "prepare", || {
         let clone = work.clone_of(&task.source)?;
-        let tree = work.worktree(&clone, commit, &name)?;
+        let tree = if a.kind == Kind::Worker {
+            work.isolated_tree(&clone, commit, &name)?
+        } else {
+            work.worktree(&clone, commit, &name)?
+        };
         Ok::<_, String>((clone, tree))
     })?;
     let outcome = run_in(work, &tree, &artifacts, store, a, result);
@@ -506,7 +564,7 @@ fn run_in(
             }
         }
     }
-    let outcome = work_and_check(tree, artifacts, store, a, result);
+    let outcome = work_and_check(&work.root, tree, artifacts, store, a, result);
     // Returned whether the attempt passed, failed or errored: what setup
     // made is unchanged unless the key files changed, and then it stays.
     if let Some((cache, key)) = &reusable {
@@ -519,6 +577,7 @@ fn run_in(
 
 /// The worker (for a worker attempt), then the hidden check.
 fn work_and_check(
+    work_root: &Path,
     tree: &Path,
     artifacts: &Path,
     store: &Store,
@@ -547,7 +606,19 @@ fn work_and_check(
             .collect::<Vec<_>>()
             .join("\n\n");
         keep(artifacts, WORKER_PROMPT, &prompt)?;
-        let argv = a.worker.render_in(&prompt, tree)?;
+        let argv = a.worker.sandboxed(
+            a.worker.render_in(&prompt, tree)?,
+            &insi_core::Places {
+                tree,
+                private: &store.private,
+                work: work_root,
+                source: &task.source,
+            },
+        )?;
+        result.isolation = Some(insi_core::Isolation {
+            history: "base-only".to_string(),
+            sandboxed: !a.worker.sandbox.is_empty(),
+        });
         let env: Vec<(&str, &std::ffi::OsStr)> = a
             .harness
             .map(|h| (HARNESS_ENV, h.as_os_str()))
@@ -851,6 +922,112 @@ mod tests {
         git(&tree, &["add", "--all"]).expect("git add works again");
         assert_eq!(clear_stale_lock(&tree).expect("checked"), None);
         work.drop_worktree(&clone, &tree);
+    }
+
+    /// **A WORKER CANNOT REACH THE ANSWER THROUGH GIT.** Its tree holds the
+    /// base commit and nothing after it: no ref, no object of the fix. And
+    /// `[worker] sandbox` is what it runs inside, with its places filled in,
+    /// which the result records.
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_tree_holds_only_the_base_and_runs_in_the_sandbox() {
+        let source = temp_dir("isolated-src");
+        let sh = |args: &[&str]| git(&source, args).expect("git");
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.email", "t@example.invalid"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(source.join("sum.ts"), "a - b\n").expect("w");
+        sh(&["add", "."]);
+        sh(&["commit", "-q", "-m", "feat: sum"]);
+        let base = sh(&["rev-parse", "HEAD"]);
+        std::fs::write(source.join("sum.ts"), "a + b\n").expect("w");
+        sh(&["commit", "-q", "-am", "fix: sum adds"]);
+        let reference = sh(&["rev-parse", "HEAD"]);
+        let fix_blob = sh(&["rev-parse", "HEAD:sum.ts"]);
+
+        let store = Store {
+            tasks: temp_dir("isolated-tasks"),
+            private: temp_dir("isolated-private"),
+        };
+        let task = Task {
+            id: "iso-1".into(),
+            source: source.display().to_string(),
+            base: base.clone(),
+            reference: reference.clone(),
+            date: None,
+            prompt: "fix: sum adds".into(),
+            hidden_tests: vec![],
+            check: vec!["true".into()],
+            public_check: vec![],
+            setup: vec![],
+            setup_cache: None,
+            budget: insi_core::Budget {
+                wall_secs: 60,
+                tokens: None,
+            },
+        };
+        let work = Work::new(temp_dir("isolated-work"));
+        // The "worker" writes down what git lets it see, and where the
+        // sandbox said its tree and the hidden tests are.
+        let mut worker = Worker::command(
+            [
+                "sh",
+                "-c",
+                "git rev-list --all > seen.refs; \
+                 git cat-file --batch-all-objects --batch-check > seen.objects; \
+                 printf '%s|%s' \"$INSI_T\" \"$INSI_P\" > seen.places",
+                "{prompt}",
+            ]
+            .map(String::from)
+            .to_vec(),
+        );
+        worker.sandbox = ["env", "INSI_T={tree}", "INSI_P={private}"]
+            .map(String::from)
+            .to_vec();
+        let r = attempt(
+            &work,
+            &store,
+            &Attempt {
+                task: &task,
+                kind: Kind::Worker,
+                seed: 0,
+                worker: &worker,
+                preface: "",
+                briefed: vec![],
+                tags: vec![],
+                keep: true,
+                harness: None,
+            },
+        );
+        assert_eq!(r.error, None, "{r:?}");
+        assert_eq!(
+            r.isolation,
+            Some(insi_core::Isolation {
+                history: "base-only".into(),
+                sandboxed: true
+            })
+        );
+        let tree = work.root.join("runs").join("iso-1-worker-s0");
+        let read = |f: &str| std::fs::read_to_string(tree.join(f)).expect(f);
+        assert_eq!(
+            read("seen.refs").trim(),
+            base,
+            "the worker saw more than the base"
+        );
+        let objects = read("seen.objects");
+        assert!(
+            !objects.contains(&reference),
+            "the fix commit is in the tree"
+        );
+        assert!(
+            !objects.contains(&fix_blob),
+            "the fixed file is in the tree"
+        );
+        assert_eq!(
+            read("seen.places"),
+            format!("{}|{}", tree.display(), store.private.display())
+        );
+        assert!(!tree.join(".git").join("FETCH_HEAD").exists());
     }
 
     /// **THE CONTROLS RUN FOR REAL.** In a two-commit repository whose fix

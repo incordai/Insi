@@ -10,7 +10,9 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 /// Run git in `dir` and return its stdout untouched (a file's contents).
 pub fn git_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    crate::process::detach_from_caller_repository(&mut command);
+    let output = command
         .args(args)
         .current_dir(dir)
         .output()

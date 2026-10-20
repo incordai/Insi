@@ -105,10 +105,19 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
             eprintln!("insi: {why}");
-            ExitCode::FAILURE
+            if why.starts_with(NOT_MEASURED) {
+                ExitCode::from(2)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
+
+/// The start of an error that means "this run says nothing about quality":
+/// too many attempts errored. Exit code 2, apart from 1 (failed) and 0, so a
+/// script or CI never reads infrastructure trouble as a result.
+const NOT_MEASURED: &str = "not measured:";
 
 /// `--key value` pairs and bare `--flag`s.
 struct Flags(BTreeMap<String, Option<String>>);
@@ -764,6 +773,7 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
         spent: 0.0,
     };
     let mut unrunnable = Unrunnable::default();
+    let (mut attempted, mut errored) = (0usize, 0usize);
     pool::each(
         &runs,
         jobs(flags)?,
@@ -794,6 +804,8 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
         |(seed, task), mut r| {
             r.cost_usd = cost_of(&prices, &r);
             store::append_result(results, &r)?;
+            attempted += 1;
+            errored += usize::from(r.error.is_some());
             println!(
                 "{} s{seed}  {}  {:.0}s{}{}{}",
                 task.id,
@@ -818,7 +830,16 @@ fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
             unrunnable.add(&r)
         },
     )?;
-    report_cmd(results)
+    report_cmd(results)?;
+    let share = errored as f64 / attempted.max(1) as f64;
+    if share > insi_loop::accept::INFRA_BUDGET {
+        return Err(format!(
+            "{NOT_MEASURED} {errored} of {attempted} attempt(s) errored (more than {:.0}%), so \
+             this run measured the infrastructure, not the worker",
+            insi_loop::accept::INFRA_BUDGET * 100.0
+        ));
+    }
+    Ok(())
 }
 
 /// The improvement loop: selection on the older half of the fair tasks,
@@ -910,6 +931,20 @@ fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String>
         },
     )?;
     let ld = improve::LoopDir::new(work);
+    if outcome.not_measured > 0 && outcome.not_measured == outcome.steps {
+        return Err(format!(
+            "{NOT_MEASURED} every one of {} step(s) had too many errored attempts to judge; \
+             the audit trail is {}",
+            outcome.steps,
+            ld.audit().display()
+        ));
+    }
+    if outcome.not_measured > 0 {
+        println!(
+            "{} of {} step(s) were not measured (too many errored attempts)",
+            outcome.not_measured, outcome.steps
+        );
+    }
     if outcome.best == outcome.start {
         println!(
             "no change beat the harness in {} step(s); the audit trail is {}",
@@ -1068,7 +1103,7 @@ fn report_cmd(results: &Path) -> Result<(), String> {
     }
     for (condition, t) in &by {
         println!(
-            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s, {}{}",
+            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s, {}{}{}",
             t.passed,
             t.attempts - t.errors,
             t.pass_rate() * 100.0,
@@ -1082,6 +1117,15 @@ fn report_cmd(results: &Path) -> Result<(), String> {
                 format!(
                     ", reward hacking {}/{} (public check passed, hidden failed)",
                     t.reward_hacks, t.public_judged
+                )
+            } else {
+                String::new()
+            },
+            if t.unsandboxed > 0 {
+                format!(
+                    ", {} attempt(s) unsandboxed (the worker could read the answer on disk; \
+                     set [worker] sandbox)",
+                    t.unsandboxed
                 )
             } else {
                 String::new()
@@ -1134,6 +1178,7 @@ mod tests {
             phases.insert("worker".to_string(), 1.0);
         }
         EvalResult {
+            isolation: None,
             task: task.into(),
             seed: 0,
             kind: "worker".into(),
@@ -1216,6 +1261,7 @@ mod tests {
     #[test]
     fn three_unrunnable_attempts_in_a_row_stop_the_run() {
         let broken = |task: &str| EvalResult {
+            isolation: None,
             error: Some("git fetch (exit 128): no output".into()),
             ..spent(task, None, None, false)
         };

@@ -16,8 +16,8 @@ pub mod task;
 pub mod topic;
 pub mod trust;
 
-pub use config::{Config, Price, Worker};
+pub use config::{Config, Places, Price, Worker};
 pub use lesson::{Lesson, Verification};
 pub use signature::normalize;
-pub use task::{Budget, EvalResult, Task, Usage};
+pub use task::{Budget, EvalResult, Isolation, Task, Usage};
 pub use trust::Trust;
