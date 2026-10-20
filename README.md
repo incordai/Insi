@@ -389,6 +389,25 @@ insi issue --number 42            # from the repository's folder
   network. Committing, the scan and the push stay outside it, on this
   machine. A sandbox with no `{tree}` is refused.
 
+  Without a container,
+  [`sbx`](https://github.com/incordai/Incode/tree/main/crates/sandbox) does
+  the same with the OS's own sandbox (Landlock on Linux, Seatbelt on
+  macOS). In the example below:
+  - writes are confined to the worktree and the agent's own state;
+  - the network only reaches the hosts listed;
+  - the session and `GIT_DIR` variables are stripped;
+  - the step is killed after the wall limit.
+
+  It refuses to run when the machine cannot enforce the policy, instead of
+  running unconfined:
+
+  ```toml
+  [sandbox]
+  command = ["sbx", "run", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
+             "--allow-host", "api.anthropic.com", "--allow-host", "registry.npmjs.org",
+             "--wall", "1800", "--"]
+  ```
+
 GitHub is reached through the `gh` CLI, which holds the login: Insi reads,
 holds and sends no token.
 
