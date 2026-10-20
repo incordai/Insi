@@ -1046,7 +1046,7 @@ fn report_cmd(results: &Path) -> Result<(), String> {
     }
     for (condition, t) in &by {
         println!(
-            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s, ${:.2}{}{}",
+            "{condition}: {}/{} passed ({:.0}%), {} repeat failure(s), {} timed out, {} error(s), {} tokens, {:.0}s, {}{}",
             t.passed,
             t.attempts - t.errors,
             t.pass_rate() * 100.0,
@@ -1055,12 +1055,7 @@ fn report_cmd(results: &Path) -> Result<(), String> {
             t.errors,
             t.tokens,
             t.wall_secs,
-            t.cost_usd,
-            if t.uncosted > 0 {
-                format!(" (+{} attempt(s) of unknown cost)", t.uncosted)
-            } else {
-                String::new()
-            },
+            t.cost_line(),
             if t.public_judged > 0 {
                 format!(
                     ", reward hacking {}/{} (public check passed, hidden failed)",

@@ -18,6 +18,8 @@ pub struct Totals {
     pub wall_secs: f64,
     /// US dollars, summed over the attempts that have a cost.
     pub cost_usd: f64,
+    /// Attempts that have a cost: what `cost_usd` is a sum of.
+    pub priced: usize,
     /// Attempts whose worker ran but whose cost is not known (no usage
     /// reported, or no price for its model): the cost above is a floor.
     pub uncosted: usize,
@@ -40,6 +42,24 @@ impl Totals {
             self.passed as f64 / judged as f64
         }
     }
+
+    /// What the attempts cost, as the report line says it.
+    ///
+    /// With nothing priced there is no dollar figure at all: `$0.00 (+3
+    /// attempt(s) of unknown cost)` read as "free" when every attempt was in
+    /// fact unpriced, and the fix — a `[prices]` entry — is named instead.
+    pub fn cost_line(&self) -> String {
+        match (self.priced, self.uncosted) {
+            (0, unpriced) if unpriced > 0 => format!(
+                "cost unknown ({unpriced} attempt(s) unpriced; add [prices] to .insi/config.toml)"
+            ),
+            (_, 0) => format!("${:.2}", self.cost_usd),
+            (_, unpriced) => format!(
+                "${:.2} (+{unpriced} attempt(s) of unknown cost)",
+                self.cost_usd
+            ),
+        }
+    }
 }
 
 /// Worker attempts summed by condition. Control runs (`base`, `reference`)
@@ -54,7 +74,10 @@ pub fn by_condition(results: &[EvalResult]) -> BTreeMap<String, Totals> {
         t.tokens += r.tokens.unwrap_or(0);
         t.wall_secs += r.wall_secs;
         match r.cost_usd {
-            Some(c) => t.cost_usd += c,
+            Some(c) => {
+                t.cost_usd += c;
+                t.priced += 1;
+            }
             None if r.phases.contains_key("worker") => t.uncosted += 1,
             None => {}
         }
@@ -185,6 +208,37 @@ mod tests {
         ];
         let t = &by_condition(&results)["x"];
         assert_eq!((t.public_judged, t.reward_hacks), (3, 1));
+    }
+
+    /// **WITH NOTHING PRICED, THE COST IS UNKNOWN, NOT `$0.00`.** Three
+    /// unpriced attempts read as free; a partly priced run still shows its
+    /// floor and how many attempts it leaves out.
+    #[test]
+    fn a_run_with_no_price_says_its_cost_is_unknown() {
+        let worker_ran = |cost: Option<f64>| {
+            let mut a = r("t", "worker", true, None, &["x"]);
+            a.cost_usd = cost;
+            a.phases.insert("worker".into(), 1.0);
+            a
+        };
+        let none = by_condition(&[worker_ran(None), worker_ran(None), worker_ran(None)]);
+        assert_eq!(
+            none["x"].cost_line(),
+            "cost unknown (3 attempt(s) unpriced; add [prices] to .insi/config.toml)"
+        );
+
+        let some = by_condition(&[worker_ran(Some(0.25)), worker_ran(None)]);
+        assert_eq!(
+            some["x"].cost_line(),
+            "$0.25 (+1 attempt(s) of unknown cost)"
+        );
+
+        let all = by_condition(&[worker_ran(Some(0.25)), worker_ran(Some(0.0))]);
+        assert_eq!(
+            all["x"].cost_line(),
+            "$0.25",
+            "a subscription model is priced at zero"
+        );
     }
 
     #[test]

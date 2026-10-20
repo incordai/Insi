@@ -234,14 +234,28 @@ pub struct Worker {
 impl Worker {
     /// The default adapter: incode, printing its events as JSON lines so the
     /// run's token use can be read back.
+    ///
+    /// `--spec-gate=off` because a task is already scoped: with the gate on,
+    /// every attempt on a repository without incode's spec set first wrote
+    /// five documents from guesses (130–170k tokens an attempt, repeated in
+    /// every worktree), so the pass rate, tokens and wall time measured
+    /// doc-writing as well as the fix. incode says `"spec_gate":"off"` in its
+    /// result line.
     pub fn incode() -> Self {
         Worker {
-            command: ["incode", "-t", PROMPT, "--output-format", "stream-json"]
-                .map(String::from)
-                .to_vec(),
-            // incode's state, the spec set its spec step writes
-            // (incode src/spec.rs SPEC_SET), and the backups its edit hook
-            // keeps beside each edited file.
+            command: [
+                "incode",
+                "-t",
+                PROMPT,
+                "--output-format",
+                "stream-json",
+                "--spec-gate=off",
+            ]
+            .map(String::from)
+            .to_vec(),
+            // incode's state, the spec set its spec step writes when the gate
+            // is on (incode src/spec.rs SPEC_SET), and the backups its edit
+            // hook keeps beside each edited file.
             own_files: [
                 ".incode/**",
                 ".incord/**",
@@ -548,6 +562,10 @@ mod tests {
     fn a_worker_must_be_handed_the_prompt() {
         let argv = Worker::incode().render("fix the bug").expect("renders");
         assert!(argv.contains(&"fix the bug".to_string()), "{argv:?}");
+        assert!(
+            argv.contains(&"--spec-gate=off".to_string()),
+            "every attempt would write incode's spec set before the fix: {argv:?}"
+        );
 
         let blind = Worker::command(vec!["agent".into(), "--go".into()]);
         assert!(blind

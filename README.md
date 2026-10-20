@@ -595,7 +595,7 @@ trusted_issue_label = "insi"
 
 [worker]
 # {prompt} is replaced by the task's prompt. The default is incode.
-command = ["incode", "-t", "{prompt}", "--output-format", "stream-json"]
+command = ["incode", "-t", "{prompt}", "--output-format", "stream-json", "--spec-gate=off"]
 
 # US dollars per million tokens, by the model name the worker reports.
 # A model on a subscription is an entry with no keys (all zero).
@@ -608,10 +608,18 @@ cache_read = 0.3
 
 Any agent with a non-interactive mode can be the worker. The model and token
 counts are read from incode's `stream-json` result; another worker's attempts
-are timed but not counted in tokens.
+are timed but not counted in tokens. `--spec-gate=off` keeps incode from
+writing its spec documents before each already-scoped task (it needs an incode
+that has the flag; an older one refuses it by name).
+
+Every command Insi starts — the worker, the checks, `gh` — is started without
+the variables of the agent session Insi itself runs in (`CLAUDECODE`,
+`CLAUDE_CODE_SESSION_ID`, …), so concurrent attempts never share, or report,
+the operator's session. Credentials are passed through.
 
 Each attempt records `cost_usd` from `[prices]`, and `insi report` sums it
-per condition. `insi eval --max-dollars D` starts no new attempt once the
+per condition — or says `cost unknown (N attempt(s) unpriced; add [prices]
+to .insi/config.toml)` when no attempt has a price, rather than `$0.00`. `insi eval --max-dollars D` starts no new attempt once the
 run has spent D; an attempt already running is bounded by its wall time, so
 the run can end above D by at most the attempts in flight. An attempt whose
 cost is not known — no usage reported, or no price for its model — stops a
