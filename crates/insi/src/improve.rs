@@ -106,6 +106,8 @@ pub struct Outcome {
     /// the evidence a pull request of the best harness carries
     /// (crates/insi/src/harness_pr.rs).
     pub kept: Vec<String>,
+    /// Steps whose comparison measured nothing (too many errors).
+    pub not_measured: u32,
 }
 
 /// Run the loop. `on_result` sees every attempt before it is saved (to
@@ -147,6 +149,7 @@ pub fn improve(
 
     let mut accepted = 0;
     let mut kept = Vec::new();
+    let mut not_measured = 0u32;
     for step in first_step..first_step + l.steps {
         let Some(arm) = bandit.pick() else {
             return Err("no strategies to propose with".to_string());
@@ -189,22 +192,46 @@ pub fn improve(
         };
 
         let cand_select = score(l, &ld, &candidate, l.select, "select", on_result)?;
-        let (cs, is) = accept::paired(&cand_select, &inc_select);
-        let mut verdict = accept::beats(cs, is, l.margin);
-        if verdict.accepted {
+        // Seeded by the step, so the same results always give the same
+        // interval and the same decision.
+        let selection = accept::compare(&cand_select, &inc_select, u64::from(step));
+        let mut decision = accept::decide(&selection, l.margin);
+        if decision.accepted() {
             let inc_hold = score(l, &ld, &incumbent, l.holdout, "holdout", on_result)?;
             let cand_hold = score(l, &ld, &candidate, l.holdout, "holdout", on_result)?;
+            let held_out = accept::compare(&cand_hold, &inc_hold, u64::from(step));
             let (ch, ih) = accept::paired(&cand_hold, &inc_hold);
             let held = accept::holds(ch, ih, l.holdout_margin);
-            verdict = accept::Verdict {
-                accepted: held.accepted,
-                why: format!("{}; {}", verdict.why, held.why),
+            let first = decision.why().to_string();
+            decision = if held_out.errored.0 > accept::INFRA_BUDGET
+                || held_out.errored.1 > accept::INFRA_BUDGET
+            {
+                accept::Decision::NotMeasured(format!(
+                    "{first}; held out: too many attempts errored to judge"
+                ))
+            } else if !held.accepted {
+                accept::Decision::Reject(format!("{first}; {}", held.why))
+            } else if !held_out.broke.is_empty() {
+                accept::Decision::Reject(format!(
+                    "{first}; held out: broke {} that always passed before",
+                    held_out.broke.join(", ")
+                ))
+            } else {
+                accept::Decision::Accept(format!("{first}; {}", held.why))
             };
         }
-        let event = if verdict.accepted {
-            "accepted"
-        } else {
-            "rejected"
+        let verdict = accept::Verdict {
+            accepted: decision.accepted(),
+            why: decision.why().to_string(),
+        };
+        let measured = !matches!(decision, accept::Decision::NotMeasured(_));
+        if !measured {
+            not_measured += 1;
+        }
+        let event = match decision {
+            accept::Decision::Accept(_) => "accepted",
+            accept::Decision::Reject(_) => "rejected",
+            accept::Decision::NotMeasured(_) => "not-measured",
         };
         audit::append(
             &ld.audit(),
@@ -213,8 +240,11 @@ pub fn improve(
                 .strategy(&strategy.name),
         )?;
         println!("step {step}: {event} ({})", verdict.why);
-        bandit.record(arm, if verdict.accepted { 1.0 } else { 0.0 });
-        write_bandit(&ld.bandit(), &bandit)?;
+        // A step that measured nothing says nothing about its strategy.
+        if measured {
+            bandit.record(arm, if verdict.accepted { 1.0 } else { 0.0 });
+            write_bandit(&ld.bandit(), &bandit)?;
+        }
         if verdict.accepted {
             let decision = format!(
                 "Insi kept harness {} over {} (strategy {}): {change}",
@@ -258,6 +288,7 @@ pub fn improve(
         best_dir: ld.harness(&best),
         best,
         accepted,
+        not_measured,
         steps: l.steps,
         kept,
     })

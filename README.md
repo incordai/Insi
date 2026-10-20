@@ -61,7 +61,7 @@ not learned from, measured against a control.
    draft pull request ───► a person reviews it; Insi never merges
 ```
 
-Four rules keep the measurement honest:
+Four rules keep the measurement honest (all eleven, with how each is enforced, are in [docs/MEASUREMENT.md](docs/MEASUREMENT.md)):
 
 1. **The agent never sees the check.** Hidden tests live outside the
    attempt's folder and are copied in after the agent stops, replacing
