@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 -4 343 108" width="343" height="108" role="img" aria-label="INSI">
+<title>INSI</title>
+<style>.cut{stroke-dasharray:55 160;stroke-dashoffset:55;animation:run 2s linear infinite}@keyframes run{0%{stroke-dashoffset:55}25.00%{stroke-dashoffset:-100}100%{stroke-dashoffset:-100}}@media (prefers-reduced-motion:reduce){.cut{animation:none;stroke-dasharray:none}}</style>
+<defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+<g fill="#0B0D12" fill-rule="evenodd">
+<path transform="translate(0,0)" d="M0,0 H29 V14 H0 Z M0,17 H29 V100 H0 Z"/>
+<path transform="translate(37,0)" d="M0,0 H86 A28,28 0 0 1 112.4,22 L124,80 H95 L86.2,36 A12,12 0 0 0 74,26 H27 V100 H0 Z M95.6,83 H124.6 L128,100 H99 Z"/>
+<path transform="translate(171,0)" d="M28,0 H98 V26 H27 V37 H91 A28,28 0 0 1 119,65 V72 A28,28 0 0 1 91,100 H0 V74 H92 V63 H28 A28,28 0 0 1 0,35 V28 A28,28 0 0 1 28,0 Z M101,0 H119 V26 H101 Z"/>
+<path transform="translate(306,0)" d="M0,0 H29 V14 H0 Z M0,17 H29 V100 H0 Z"/>
+</g>
+<g fill="none" stroke="#FF7A1A" stroke-width="2.6" stroke-linecap="round" filter="url(#glow)">
+<line class="cut" style="animation-delay:0s" pathLength="100" x1="0" y1="15.5" x2="29" y2="15.5"/>
+<line class="cut" style="animation-delay:0.5s" pathLength="100" x1="132.3" y1="81.5" x2="161.3" y2="81.5"/>
+<line class="cut" style="animation-delay:1s" pathLength="100" x1="270.5" y1="0" x2="270.5" y2="26"/>
+<line class="cut" style="animation-delay:1.5s" pathLength="100" x1="306" y1="15.5" x2="335" y2="15.5"/>
+</g>
+</svg>
