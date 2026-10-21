@@ -1,4 +1,12 @@
-# Insi <img src="https://github.com/user-attachments/assets/5548318d-30b0-4d60-a3a7-97269dbb5d61" width="25px" alt="incordai" />
+<div align="center">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="/assets/insi-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="/assets/insi-logo-light.svg">
+    <img alt="INCORD" src="/assets/insi-logo-light.svg" width="840">
+  </picture>
+</p>
+</div>
 
 
 **Does your coding agent actually get better at your repository? Insi
