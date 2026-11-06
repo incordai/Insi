@@ -40,14 +40,15 @@ jobs:
       - run: cargo test --workspace --locked
 
   packaging:
-    name: packaging (Python ${{ matrix.python }})
+    name: packaging (${{ matrix.os }}, Python ${{ matrix.python }})
     # Pinned: ubuntu-latest now resolves to Ubuntu 26.04, which has no
     # Python 3.9 build for actions/setup-python. The upstream Python
     # manifest lists x64 Ubuntu 24.04 builds for 3.9.25 and 3.12.16.
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04, windows-latest]
         python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

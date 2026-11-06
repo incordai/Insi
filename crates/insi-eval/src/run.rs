@@ -895,6 +895,47 @@ mod tests {
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn hidden_tests_refuse_windows_junctions_even_when_dangling() {
+        let root = temp_dir("hidden-junctions");
+        let tree = root.join("tree");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&tree).expect("tree");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let sentinel = outside.join("check.rs");
+        std::fs::write(&sentinel, b"original").expect("sentinel");
+        let junction = tree.join("linked");
+        let output = std::process::Command::new("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .output()
+            .expect("create junction without symlink privileges");
+        assert!(output.status.success(), "{output:?}");
+        assert!(linked(
+            &std::fs::symlink_metadata(&junction).expect("junction metadata")
+        ));
+        assert!(restore_hidden(&tree, "linked/check.rs", b"overwrite").is_err());
+        assert_eq!(
+            std::fs::read(&sentinel).expect("sentinel survives"),
+            b"original"
+        );
+        assert!(restore_hidden(&tree, "linked", b"replace directory").is_err());
+        assert_eq!(
+            std::fs::read(&sentinel).expect("outside unchanged"),
+            b"original"
+        );
+        std::fs::remove_dir_all(&outside).expect("make junction dangling");
+        assert!(restore_hidden(&tree, "linked/check.rs", b"hidden").is_err());
+        assert!(
+            !outside.exists(),
+            "restoration must not recreate a junction target"
+        );
+        std::fs::remove_dir(&junction).expect("remove junction only");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
     #[test]
     fn tokens_are_read_from_incodes_final_result() {
         let out = "{\"type\":\"init\"}\n{\"type\":\"usage\",\"input_tokens\":5}\n\
