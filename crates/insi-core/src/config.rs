@@ -705,9 +705,8 @@ mod tests {
     }
 
     /// **A PROMPT TOO LONG FOR A COMMAND LINE STILL REACHES THE WORKER.**
-    /// Handed straight to the program, a 200 KB prompt cannot even start it
-    /// (os error 206 on Windows, E2BIG elsewhere): the failure the lesson
-    /// writer hit. Through `render_in` the program starts, is told where the
+    /// Argument limits vary by OS: test the file handoff directly rather
+    /// than assuming that a particular prompt size cannot be launched. Through `render_in` the program starts, is told where the
     /// task is, and the file holds every byte of it; a short prompt still goes
     /// on the command line and writes nothing.
     #[test]
@@ -735,12 +734,6 @@ mod tests {
                 .output()
         };
         let prompt = format!("Write one lesson.\n{}\nTHE END", "x".repeat(200_000));
-
-        let direct = worker.render(&prompt).expect("renders");
-        assert!(
-            spawn(&direct).is_err(),
-            "the failure being fixed: too long to start"
-        );
 
         let argv = worker.render_in(&prompt, &dir).expect("renders");
         let ran = spawn(&argv).expect("starts");

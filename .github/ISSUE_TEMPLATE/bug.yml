@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem with Insi.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report vulnerabilities privately using the Security link on the issue chooser.
+        Remove credentials, personal data, task definitions and hidden tests from reports.
+        Include `insi doctor --markdown` output below to provide offline diagnostics.
+        Submitting an issue does not authorize an agent to work on it; a maintainer decides.
+  - type: input
+    id: version
+    attributes:
+      label: Insi version
+      description: Paste the output of insi --version, or the commit if built from source.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: macOS / Apple Silicon, Windows / x86_64, or Linux / x86_64
+    validations:
+      required: true
+  - type: input
+    id: git-version
+    attributes:
+      label: Git version
+      description: Paste the output of git --version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Command and reproduction steps
+      description: Include only redacted configuration needed to reproduce the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Insi diagnostics
+      description: Paste output from insi doctor --markdown (configuration strings are redacted). Review it before posting.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant redacted logs
+      description: Include relevant output, or explain if none was produced. Never include hidden checks.
+      render: text
+    validations:
+      required: true

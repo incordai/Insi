@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod context;
+mod doctor;
 mod harness_pr;
 mod hook;
 mod improve;
@@ -48,6 +49,7 @@ use insi_memory::briefing;
 use insi_memory::store::{FileLessons, LessonStore};
 
 const USAGE: &str = "usage:
+  insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
   insi init     [--repo <dir>] [--check \"<cmd {tests}>\"] [--setup \"<cmd>\"] [--force]
                 [--no-mcp] [--no-hooks] [--no-ci]
                 (each --no-* keeps that file out of the repository: .mcp.json,
@@ -169,6 +171,20 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err(USAGE.to_string());
     };
     let flags = Flags::parse(rest)?;
+    if command == "doctor" {
+        let repo = flags
+            .get("repo")
+            .map(PathBuf::from)
+            .unwrap_or(std::env::current_dir().map_err(|_| "cannot read current directory")?);
+        let work = PathBuf::from(flags.get("work").unwrap_or(".insi-work"));
+        let work = if work.is_absolute() {
+            work
+        } else {
+            repo.join(work)
+        };
+        println!("{}", doctor::report(&repo, &work, flags.has("markdown")));
+        return Ok(());
+    }
     let work = Work::with_setup_jobs(
         PathBuf::from(flags.get("work").unwrap_or(".insi-work")),
         flags.number("setup-jobs", 1)? as usize,

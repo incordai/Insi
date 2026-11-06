@@ -1,0 +1,8 @@
+[files]
+extend-exclude = [".claude/temp/**", ".incord/**", "target/**"]
+
+[default.extend-words]
+# Project and worker CLI names, not misspellings.
+insi = "insi"
+incode = "incode"
+incord = "incord"

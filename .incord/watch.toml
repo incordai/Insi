@@ -1,0 +1,22 @@
+# Insi has no persistent local service or deployed host. Benchmark failures
+# are valid data. This checks job configuration, not remote job outcomes.
+[[check]]
+name = "evaluation records are readable"
+command = "python3 scripts/checks/project_health.py records"
+every_minutes = 60
+timeout_secs = 20
+paths = ["crates/insi-eval/src/store.rs", "scripts/checks/project_health.py"]
+
+[[check]]
+name = "dependency audit remains scheduled"
+command = "python3 scripts/checks/project_health.py jobs"
+every_minutes = 1440
+timeout_secs = 20
+paths = [".github/workflows/dependencies.yml"]
+
+[[check]]
+name = "workspace has space for evaluation artifacts and logs"
+command = "python3 scripts/checks/project_health.py disk"
+every_minutes = 60
+timeout_secs = 20
+paths = ["crates/insi-eval/src/run.rs", "crates/insi-eval/src/process.rs"]

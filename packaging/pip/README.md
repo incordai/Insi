@@ -3,7 +3,8 @@
 Self-improving coding agents, governed by humans. This package runs the
 `insi` binary: on first use it downloads the release archive for your
 platform, checks it against the SHA-256 pinned in this package, and keeps it
-in your cache folder.
+in your cache folder. Requires Python 3.9 or newer. Only the expected regular
+binary is read from the verified archive; archive paths are never extracted.
 
 ```sh
 pip install insi

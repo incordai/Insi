@@ -24,14 +24,48 @@ macOS and Linux, and a pull request is merged only when all three pass:
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 The tests drive real git repositories and real processes (deadlines, process
 trees), so git needs a name and email configured for the tests to commit with.
 
+CI also checks all targets on Rust 1.89.0, the declared minimum version:
+
+```sh
+cargo +1.89.0 check --workspace --all-targets --locked
+```
+
+Dependency policy is in `deny.toml`. After installing `cargo-deny`, run
+`cargo deny --all-features --locked check`. CI runs it on pull requests,
+main-branch pushes, and weekly so newly published advisories are checked.
+New dependencies must satisfy its license and source policy; advisory
+exceptions require an explicit reason and review.
+
+Maintainers: keep Dependabot security alerts enabled. After these files land,
+configure `main` to require CODEOWNERS approval, `test (windows-latest)`,
+`test (macos-latest)`, `test (ubuntu-latest)`, `msrv (Rust 1.89)`,
+`packaging (Python 3.9)`, `packaging (Python 3.12)`, and `dependency policy`.
+Repository settings are separate from the files and must be verified on GitHub.
+
 ## How changes are written
+
+CI builds public documentation with warnings denied and runs doctests:
+
+```sh
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+cargo test --doc --workspace --locked
+```
+
+Additional checks are `typos --hidden`, `zizmor --offline .github/workflows`,
+and `actionlint`. Intentional project names are in `_typos.toml`. Actions
+are pinned to full commit hashes with version comments for Dependabot.
+
+The local monitor in `.incord/watch.toml` checks optional evaluation records,
+the audit schedule configuration, and disk space. No persistent Insi server
+or deployed host is expected. Run its tests with
+`python3 -m unittest discover -s scripts/checks -p 'test_*.py'`.
 
 - **A change in behaviour comes with a test of that behaviour.** The test
   runs the changed code, asserts what it did, and fails when the change is

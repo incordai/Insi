@@ -4,7 +4,7 @@ A wheel cannot run code when it is installed, so the binary comes on the
 first run instead: the release archive for this platform is downloaded,
 checked against the SHA-256 pinned in this package's checksums.json (written
 by the release workflow), and only the one expected file is taken out of it,
-with tarfile's "data" filter refusing any path that leaves the folder.
+without extracting archive paths to disk.
 """
 
 import hashlib
@@ -81,11 +81,9 @@ def ensure(env=os.environ, checksums=None):
             f"no insi build for {platform.system()}-{platform.machine()}; "
             "build it with `cargo install insi`"
         )
-    binary = cache_dir(env) / __version__ / binary_name()
+    binary = cache_dir(env) / __version__ / tgt / binary_name()
     if binary.is_file():
         return binary
-    if not hasattr(tarfile, "data_filter"):
-        raise RuntimeError("this Python's tarfile has no safe extraction filter; use Python 3.12+")
     name = archive_name(__version__, tgt)
     if checksums is None:
         checksums = json.loads((Path(__file__).parent / "checksums.json").read_text())
@@ -98,18 +96,36 @@ def ensure(env=os.environ, checksums=None):
     with tempfile.TemporaryDirectory(prefix="insi-pip-") as work:
         archive = Path(work) / name
         archive.write_bytes(data)
-        out = Path(work) / "x"
-        out.mkdir()
         with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(out, filter="data")
-        found = out / binary_name()
-        if not found.is_file() or found.is_symlink():
-            raise RuntimeError(f"{name} holds no {binary_name()}")
+            members = tar.getmembers()
+            # Release archives contain exactly one regular binary. Never
+            # extract paths, symlinks, hard links, devices or extra members.
+            if len(members) != 1 or members[0].name != binary_name() or not members[0].isfile():
+                raise tarfile.TarError(f"{name} must hold only a regular {binary_name()}")
+            source = tar.extractfile(members[0])
+            if source is None:
+                raise tarfile.TarError(f"{name} holds no binary")
+            with source:
+                payload = source.read()
         binary.parent.mkdir(parents=True, exist_ok=True)
-        staged = binary.with_suffix(binary.suffix + ".part")
-        staged.write_bytes(found.read_bytes())
-        staged.chmod(0o755)
-        os.replace(staged, binary)
+        # Each installer owns its staging file. Atomic replacement publishes
+        # only complete bytes; concurrent installers publish identical data.
+        fd, staged_name = tempfile.mkstemp(prefix=".insi-", suffix=".part", dir=binary.parent)
+        staged = Path(staged_name)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(payload)
+            staged.chmod(0o755)
+            # Another installer may already have finished (including a
+            # process currently executing the binary on Windows).
+            if not binary.is_file():
+                try:
+                    os.replace(staged, binary)
+                except OSError:
+                    if not binary.is_file():
+                        raise
+        finally:
+            staged.unlink(missing_ok=True)
     return binary
 
 

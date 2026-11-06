@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/incordai/Insi/security/advisories/new
+    about: Use a private advisory for hidden-check leaks, sandbox escapes, or secrets.

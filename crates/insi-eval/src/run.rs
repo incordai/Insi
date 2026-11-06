@@ -6,7 +6,7 @@
 //! stopped, so nothing the worker did could have edited them.
 //!
 //! A worker attempt gets a repository of its own holding the base commit
-//! and nothing else ([`Work::isolated_tree`]): a worktree of the clone shares
+//! and nothing else (`Work::isolated_tree`): a worktree of the clone shares
 //! its history, and `git log --all` there showed the fix commit — the task's
 //! answer — to any worker that looked. What git cannot show, the disk still
 //! can (the source checkout, the hidden tests); `[worker] sandbox` is what
@@ -62,7 +62,7 @@ struct GitLock<'a> {
 /// Attempts may run on several threads at once. Their worktrees are their
 /// own, but the clone they come from is shared, and git refuses two writers
 /// on one repository (`index.lock`, `worktrees/` bookkeeping): every git
-/// command on a clone takes [`Work::git_lock`] first.
+/// command on a clone takes its internal git lock first.
 pub struct Work {
     pub root: PathBuf,
     git_lock: std::sync::Mutex<()>,
@@ -564,15 +564,15 @@ fn run_in(
             }
         }
     }
-    let outcome = work_and_check(&work.root, tree, artifacts, store, a, result);
-    // Returned whether the attempt passed, failed or errored: what setup
-    // made is unchanged unless the key files changed, and then it stays.
+    // Publish only setup output, before exposing it to a worker or check.
     if let Some((cache, key)) = &reusable {
         if let Err(why) = crate::deps::give_back(&work.root, cache, &task.setup, key, tree) {
-            result.notes.push(format!("setup output not kept: {why}"));
+            result
+                .notes
+                .push(format!("setup snapshot not published: {why}"));
         }
     }
-    outcome
+    work_and_check(&work.root, tree, artifacts, store, a, result)
 }
 
 /// The worker (for a worker attempt), then the hidden check.
@@ -654,11 +654,7 @@ fn work_and_check(
     // is replaced by the real check.
     for path in &task.hidden_tests {
         let bytes = store.hidden(task, path)?;
-        let target = tree.join(path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        }
-        std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+        restore_hidden(tree, path, &bytes)?;
     }
     let check = timed(result, "check", || {
         process::run(&task.check_argv(), tree, Duration::from_secs(CHECK_SECS))
@@ -671,6 +667,61 @@ fn work_and_check(
         result.signature = Some(normalize(&check.tail()));
     }
     Ok(())
+}
+
+/// Restore a hidden file without following worker-created links. Workers
+/// must be stopped before this runs; the configured sandbox excludes other
+/// writers. A linked ancestor is rejected, never traversed.
+fn restore_hidden(tree: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if !insi_core::task::is_safe_relative(relative) {
+        return Err("unsafe hidden path".into());
+    }
+    let target = tree.join(relative);
+    let mut current = tree.to_path_buf();
+    let parts: Vec<_> = Path::new(relative).components().collect();
+    for part in &parts[..parts.len() - 1] {
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if linked(&meta) || !meta.is_dir() => {
+                return Err(format!(
+                    "hidden test ancestor is not a plain directory: {}",
+                    current.display()
+                ))
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current).map_err(|e| e.to_string())?
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    match std::fs::symlink_metadata(&target) {
+        Ok(meta) if meta.is_dir() && !linked(&meta) => {
+            return Err("hidden test destination is a directory".into())
+        }
+        Ok(_) => std::fs::remove_file(&target).map_err(|e| e.to_string())?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(|e| format!("{}: {e}", target.display()))
+}
+
+fn linked(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
 }
 
 /// Remove the index lock a worker stopped at its budget left in `tree`'s git
@@ -817,6 +868,32 @@ fn last_lines(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn hidden_tests_replace_file_links_and_refuse_linked_ancestors() {
+        let root = std::env::temp_dir().join(format!("insi-hidden-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("tree/tests")).expect("dirs");
+        let outside = root.join("sentinel");
+        std::fs::write(&outside, "original").expect("sentinel");
+        let tree = root.join("tree");
+        std::os::unix::fs::symlink(&outside, tree.join("tests/check.rs")).expect("link");
+        restore_hidden(&tree, "tests/check.rs", b"hidden").expect("restored");
+        assert_eq!(
+            std::fs::read(tree.join("tests/check.rs")).expect("read"),
+            b"hidden"
+        );
+        assert_eq!(std::fs::read(&outside).expect("outside"), b"original");
+        std::os::unix::fs::symlink(&root, tree.join("linked")).expect("parent link");
+        assert!(restore_hidden(&tree, "linked/sentinel", b"overwrite").is_err());
+        assert_eq!(std::fs::read(&outside).expect("outside"), b"original");
+        std::os::unix::fs::symlink(root.join("missing"), tree.join("tests/dangling.rs"))
+            .expect("dangling");
+        restore_hidden(&tree, "tests/dangling.rs", b"hidden").expect("replace dangling");
+        assert!(!root.join("missing").exists());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn tokens_are_read_from_incodes_final_result() {

@@ -201,13 +201,15 @@ key = ["package-lock.json"]
 keep = ["node_modules"]
 ```
 
-`[setup_cache]` lets attempts reuse what setup made instead of making it
-again: after an attempt, `node_modules` is moved (renamed, not copied) into
-`<work>/deps/<key>/`, and the next attempt whose setup command and lockfile
-match moves it back in and skips setup. A worker that changed the lockfile
-keeps its folder out of the cache. On Watchman, `npm ci` was 4 to 5.5
-minutes of every attempt. Written for a Node project with a lockfile; a
-`--setup` given by hand gets none, since it may make something else.
+`[setup_cache]` lets attempts reuse a pristine snapshot of setup output.
+After setup succeeds and before any worker or check runs, `node_modules`
+is copied into `<work>/deps-pristine-v1/<key>/`. Matching attempts receive
+private copies; their modified dependencies are discarded afterward.
+The new cache namespace excludes older snapshots exposed to workers.
+Copying costs disk time, but changes made by one attempt cannot leak into
+another through the cache. Internal relative dependency symlinks are
+preserved; links outside the snapshot are refused. A `--setup` given by hand
+gets no cache, since it may produce different output.
 
 For Rust the check is `cargo test {test_stems}`: when every hidden test is
 an integration-test target (`tests/<stem>.rs` or `tests/<stem>/main.rs`),
@@ -580,7 +582,15 @@ short-lived, PR-only tokens; until then `--pr` uses the operator's login.
 
 ## Commands
 
+`insi doctor --markdown` collects offline diagnostics for a bug report: build
+version and commit, target, OS, Git version, configured-worker availability,
+redacted configuration, and work-folder lock states. It does not run the worker
+or clean the work folder. Config strings and model names are redacted; lock
+states are only a snapshot. Use `--repo <dir>` and `--work <dir>` to inspect
+another repository and its work folder.
+
 ```text
+insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
 insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
               [--setup "<cmd>"] [--public-check "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
 insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
@@ -713,7 +723,7 @@ of the format; set the ones you pay.)
 
 ```sh
 cargo build --release
-cargo test
+cargo test --workspace --locked
 ```
 
 ## Contributing
@@ -724,8 +734,8 @@ run what CI runs on Windows, macOS and Linux:
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how changes are written, tested

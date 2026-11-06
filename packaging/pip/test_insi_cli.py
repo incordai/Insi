@@ -10,6 +10,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import subprocess
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -72,6 +74,30 @@ class Wrapper(unittest.TestCase):
         with self.assertRaises(tarfile.TarError):
             insi_cli.ensure(self.env, {self.name: digest})
         self.assertFalse((Path(self.tmp.name) / "escape").exists())
+
+    def test_concurrent_first_runs_publish_complete_binary(self):
+        payload = b"complete-binary" * 10000
+        digest = self.put({insi_cli.binary_name(): payload})
+        script = "import insi_cli,json,sys; p=insi_cli.ensure(json.loads(sys.argv[1]),json.loads(sys.argv[2])); assert p.read_bytes()==b'complete-binary'*10000"
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).parent / "src"))
+        children = [subprocess.Popen([sys.executable, "-c", script, json.dumps(self.env), json.dumps({self.name: digest})], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(8)]
+        for child in children:
+            stdout, stderr = child.communicate(timeout=30)
+            self.assertEqual(child.returncode, 0, (stdout, stderr))
+        self.assertEqual(list(Path(self.env["INSI_CACHE_DIR"]).rglob("*.part")), [])
+
+    def test_archive_links_and_extra_members_are_refused(self):
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                info = tarfile.TarInfo(insi_cli.binary_name())
+                info.type = kind
+                info.linkname = "../outside"
+                tar.addfile(info)
+            data = buf.getvalue()
+            (self.release / self.name).write_bytes(data)
+            with self.assertRaises(tarfile.TarError):
+                insi_cli.ensure(self.env, {self.name: hashlib.sha256(data).hexdigest()})
 
     def test_only_https_or_a_folder(self):
         env = dict(self.env, INSI_DOWNLOAD_BASE="http://example.invalid")

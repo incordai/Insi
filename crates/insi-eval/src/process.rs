@@ -69,10 +69,24 @@ pub fn run_with(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    #[cfg(windows)]
+    let job = windows_job::Job::new()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Assign to the job before any worker instruction can start a child.
+        command.creation_flags(0x0000_0004); // CREATE_SUSPENDED
+    }
     let started = Instant::now();
     let mut child = command
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", program.display()))?;
+    #[cfg(windows)]
+    if let Err(e) = job.start(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
     let mut timed_out = false;
@@ -88,9 +102,22 @@ pub fn run_with(
                 let _ = child.kill();
                 break child.wait().ok();
             }
-            Err(e) => return Err(format!("waiting for {}: {e}", program.display())),
+            Err(e) => {
+                kill_tree(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("waiting for {}: {e}", program.display()));
+            }
         }
     };
+    // A successful parent may still leave children holding pipes or editing
+    // the checkout. Stop the whole owned group before collecting output.
+    #[cfg(windows)]
+    drop(job);
+    #[cfg(unix)]
+    kill_tree(child.id());
+    let stdout = out.finish();
+    let stderr = err.finish();
     let wall = started.elapsed();
     Ok(Outcome {
         code: if timed_out {
@@ -99,34 +126,50 @@ pub fn run_with(
             status.and_then(|s| s.code())
         },
         timed_out,
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
+        stdout,
+        stderr,
         wall,
     })
 }
 
-fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let Some(mut pipe) = pipe else {
-            return String::new();
-        };
-        let mut kept: Vec<u8> = Vec::new();
-        let mut chunk = [0u8; 8192];
-        while let Ok(n) = pipe.read(&mut chunk) {
-            if n == 0 {
-                break;
-            }
-            kept.extend_from_slice(&chunk[..n]);
-            if kept.len() > 2 * KEEP {
-                kept.drain(..kept.len() - KEEP);
-            }
-        }
-        if kept.len() > KEEP {
-            kept.drain(..kept.len() - KEEP);
-        }
-        String::from_utf8_lossy(&kept).into_owned()
-    })
+struct Drain {
+    tail: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
 }
+
+impl Drain {
+    fn finish(self) -> String {
+        // Even an escaped descendant retaining a pipe cannot hold Insi up.
+        let _ = self.done.recv_timeout(Duration::from_secs(1));
+        let kept = self.tail.lock().unwrap_or_else(|e| e.into_inner());
+        String::from_utf8_lossy(&kept).into_owned()
+    }
+}
+
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> Drain {
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = std::sync::Arc::clone(&tail);
+    let (sent, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let mut bytes = kept.lock().unwrap_or_else(|e| e.into_inner());
+                bytes.extend_from_slice(&chunk[..n]);
+                let excess = bytes.len().saturating_sub(KEEP);
+                bytes.drain(..excess);
+            }
+        }
+        let _ = sent.send(());
+    });
+    Drain { tail, done }
+}
+
+#[cfg(windows)]
+mod windows_job;
 
 /// Stop a process and everything it started.
 fn kill_tree(pid: u32) {
@@ -251,6 +294,66 @@ mod tests {
 
     fn here() -> PathBuf {
         std::env::current_dir().expect("cwd")
+    }
+
+    #[test]
+    #[allow(
+        clippy::zombie_processes,
+        reason = "fixture deliberately exits before its child to exercise process-tree cleanup"
+    )]
+    fn descendant_fixture() {
+        let Ok(mode) = std::env::var("INSI_DESCENDANT_FIXTURE") else {
+            return;
+        };
+        if mode == "leaf" {
+            std::thread::sleep(Duration::from_secs(2));
+            std::fs::write(
+                std::env::var_os("INSI_DESCENDANT_MARKER").expect("marker"),
+                "survived",
+            )
+            .expect("write");
+            return;
+        }
+        std::process::Command::new(std::env::current_exe().expect("binary"))
+            .args([
+                "--exact",
+                "process::tests::descendant_fixture",
+                "--nocapture",
+            ])
+            .env("INSI_DESCENDANT_FIXTURE", "leaf")
+            .spawn()
+            .expect("descendant");
+        println!("started descendant");
+    }
+
+    #[test]
+    fn exiting_parent_does_not_leave_a_pipe_holding_child() {
+        let marker = std::env::temp_dir().join(format!("insi-descendant-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let started = Instant::now();
+        let out = run_with(
+            &[
+                std::env::current_exe()
+                    .expect("binary")
+                    .display()
+                    .to_string(),
+                "--exact".into(),
+                "process::tests::descendant_fixture".into(),
+                "--nocapture".into(),
+            ],
+            &here(),
+            Duration::from_secs(1),
+            &[
+                ("INSI_DESCENDANT_FIXTURE", "parent".as_ref()),
+                ("INSI_DESCENDANT_MARKER", marker.as_os_str()),
+            ],
+        )
+        .expect("runs");
+        assert!(out.success(), "{out:?}");
+        assert!(out.stdout.contains("started descendant"), "{out:?}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(2200));
+        assert!(!marker.exists(), "descendant survived parent cleanup");
     }
 
     #[test]

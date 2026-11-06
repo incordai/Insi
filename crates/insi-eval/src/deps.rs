@@ -1,23 +1,5 @@
-//! Setup output reused between attempts instead of rebuilt.
-//!
-//! Every attempt gets a fresh worktree, and setup (`npm ci`) used to run in
-//! each one: measured on Watchman, 4 to 5.5 minutes of every 13 to 20 minute
-//! attempt, installing the same lockfile each time. With a
-//! [`SetupCache`], what setup produced (`node_modules`) is kept between
-//! attempts under `<work>/deps/<key>/` and moved into the next worktree whose
-//! key matches.
-//!
-//! - **Moved, not copied.** A rename on one volume is instant; copying tens
-//!   of thousands of files is minutes.
-//! - **The key** is the setup command plus the contents of the key files
-//!   (the lockfile) at the attempt's commit. A different lockfile is a
-//!   different key, and setup runs.
-//! - **Returned only when still right.** After the attempt the key is read
-//!   again from the worktree; a worker that changed the lockfile (installed
-//!   something) changed what is in the folder, and it is not returned.
-//! - **One holder at a time.** A slot is taken and returned under a file
-//!   lock; an attempt that finds the slot empty — another attempt holds it —
-//!   runs setup itself.
+//! Pristine setup snapshots, published before workers or checks run.
+//! Attempts receive private copies and never return worker-exposed output.
 
 use std::path::{Path, PathBuf};
 
@@ -37,6 +19,11 @@ pub fn key(cache: &SetupCache, setup: &[String], tree: &Path) -> Option<String> 
         hash ^= 0xff;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     };
+    feed(std::env::consts::OS.as_bytes());
+    feed(std::env::consts::ARCH.as_bytes());
+    for folder in &cache.keep {
+        feed(folder.as_bytes());
+    }
     for arg in setup {
         feed(arg.as_bytes());
     }
@@ -48,12 +35,11 @@ pub fn key(cache: &SetupCache, setup: &[String], tree: &Path) -> Option<String> 
 }
 
 fn slot(root: &Path, key: &str) -> PathBuf {
-    root.join("deps").join(key)
+    root.join("deps-pristine-v1").join(key)
 }
 
-/// Move the kept folders for `key` from the cache into `tree`. `Ok` when
-/// every one was there and moved; otherwise why not — nothing is left
-/// half-moved, and setup must run.
+/// Copy pristine folders for `key` from the cache into `tree`. `Ok` when
+/// every one was copied; otherwise partial copies are discarded and setup runs.
 pub fn take(root: &Path, cache: &SetupCache, key: &str, tree: &Path) -> Result<(), String> {
     let slot = slot(root, key);
     if !slot.is_dir() {
@@ -61,34 +47,29 @@ pub fn take(root: &Path, cache: &SetupCache, key: &str, tree: &Path) -> Result<(
     }
     let _held = insi_core::lock::lock_beside(&slot)
         .map_err(|e| format!("the cache for {key} could not be locked: {e}"))?;
+    if !slot.join(".complete").is_file() {
+        return Err(format!("cache for {key} was not completely published"));
+    }
     if let Some(k) = cache.keep.iter().find(|k| !slot.join(k).exists()) {
         return Err(format!("the cache for {key} holds no {k}"));
     }
     if let Some(k) = cache.keep.iter().find(|k| tree.join(k).exists()) {
         return Err(format!("the worktree already has {k}"));
     }
-    let mut moved: Vec<&String> = Vec::new();
     for k in &cache.keep {
-        let to = tree.join(k);
-        if let Some(parent) = to.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::rename(slot.join(k), &to) {
-            // Put back what already moved: the slot stays whole for the
-            // next attempt, and this one runs setup.
-            for done in moved {
-                let _ = std::fs::rename(tree.join(done), slot.join(done));
+        if let Err(e) = copy_private(&slot.join(k), &tree.join(k), &slot) {
+            for keep in &cache.keep {
+                let _ = std::fs::remove_dir_all(tree.join(keep));
             }
-            return Err(format!("{k} could not be moved out of the cache: {e}"));
+            return Err(e);
         }
-        moved.push(k);
     }
     Ok(())
 }
 
-/// Move the kept folders back from `tree` into the cache for `key` — only
+/// Publish pristine setup folders before any worker/check runs — only
 /// when the key read from `tree` now is still `key`, and only into a slot
-/// that is empty. `Ok` when they went back; otherwise why not.
+/// that has no completed snapshot. The caller must not have run a worker yet.
 pub fn give_back(
     root: &Path,
     cache: &SetupCache,
@@ -103,29 +84,68 @@ pub fn give_back(
     std::fs::create_dir_all(&slot).map_err(|e| format!("{}: {e}", slot.display()))?;
     let _held = insi_core::lock::lock_beside(&slot)
         .map_err(|e| format!("the cache for {key} could not be locked: {e}"))?;
-    if let Some(k) = cache.keep.iter().find(|k| slot.join(k).exists()) {
-        return Err(format!("the cache for {key} already holds {k}"));
+    if slot.join(".complete").is_file() {
+        return Ok(());
+    }
+    // A crash during publication leaves an incomplete snapshot. No reader
+    // may use it, and the next publisher rebuilds it while holding the lock.
+    for k in &cache.keep {
+        let _ = std::fs::remove_dir_all(slot.join(k));
     }
     if let Some(k) = cache.keep.iter().find(|k| !tree.join(k).is_dir()) {
         return Err(format!("the worktree has no {k} to return"));
     }
-    let mut moved: Vec<&String> = Vec::new();
     for k in &cache.keep {
-        let to = slot.join(k);
-        if let Some(parent) = to.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::rename(tree.join(k), &to) {
-            // A folder still in use (a test process holding a file) is left
-            // with the tree; the slot must hold all or none.
-            for done in moved {
-                let _ = std::fs::rename(slot.join(done), tree.join(done));
+        if let Err(e) = copy_private(&tree.join(k), &slot.join(k), tree) {
+            for keep in &cache.keep {
+                let _ = std::fs::remove_dir_all(slot.join(keep));
             }
-            return Err(format!("{k} could not be moved into the cache: {e}"));
+            return Err(e);
         }
-        moved.push(k);
     }
+    std::fs::write(slot.join(".complete"), b"pristine-v1").map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// Preserve internal dependency links (e.g. node_modules/.bin), but refuse
+// links reaching outside the snapshot and special files.
+fn copy_private(from: &Path, to: &Path, boundary: &Path) -> Result<(), String> {
+    let copy = || -> std::io::Result<()> {
+        let meta = std::fs::symlink_metadata(from)?;
+        if meta.file_type().is_symlink() {
+            let target = std::fs::read_link(from)?;
+            if target.is_absolute() || !from.canonicalize()?.starts_with(boundary.canonicalize()?) {
+                return Err(std::io::Error::other("dependency link escapes snapshot"));
+            }
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, to)?;
+            #[cfg(windows)]
+            if from.is_dir() {
+                std::os::windows::fs::symlink_dir(target, to)?;
+            } else {
+                std::os::windows::fs::symlink_file(target, to)?;
+            }
+        } else if meta.is_dir() {
+            std::fs::create_dir_all(to)?;
+            for entry in std::fs::read_dir(from)? {
+                let entry = entry?;
+                copy_private(&entry.path(), &to.join(entry.file_name()), boundary)
+                    .map_err(std::io::Error::other)?;
+            }
+        } else if meta.is_file() {
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(from, to)?;
+        } else {
+            return Err(std::io::Error::other("special file in dependency snapshot"));
+        }
+        Ok(())
+    };
+    copy().map_err(|e| format!("{}: {e}", from.display()))
 }
 
 #[cfg(test)]
@@ -158,12 +178,9 @@ mod tests {
         t
     }
 
-    /// **WHAT ONE ATTEMPT INSTALLED, THE NEXT ONE REUSES — WHILE THE
-    /// LOCKFILE IS THE SAME.** Returned to the cache after the first
-    /// attempt, moved into the second; a different lockfile is a different
-    /// key and finds nothing.
+    /// Worker edits never reach later attempts with the same setup key.
     #[test]
-    fn kept_output_moves_between_attempts_with_the_same_key() {
+    fn attempts_get_private_copies_of_pristine_setup() {
         let root = dir("root");
         let setup = vec!["npm".to_string(), "ci".to_string()];
         let first = tree("first", "{\"v\":1}");
@@ -172,14 +189,22 @@ mod tests {
         let k = key(&cache(), &setup, &first).expect("key");
 
         give_back(&root, &cache(), &setup, &k, &first).expect("returned");
-        assert!(!first.join("node_modules").exists(), "moved, not copied");
+        assert!(
+            first.join("node_modules").exists(),
+            "snapshot leaves setup intact"
+        );
 
         let second = tree("second", "{\"v\":1}");
         assert_eq!(key(&cache(), &setup, &second).as_deref(), Some(k.as_str()));
         take(&root, &cache(), &k, &second).expect("reused");
         assert!(second.join("node_modules/pkg/index.js").is_file());
-        let why = take(&root, &cache(), &k, &dir("third")).expect_err("one holder at a time");
-        assert!(why.contains("holds no node_modules"), "{why}");
+        std::fs::write(second.join("node_modules/pkg/index.js"), "worker edit").expect("edit");
+        let third = dir("third");
+        take(&root, &cache(), &k, &third).expect("pristine copy");
+        assert_eq!(
+            std::fs::read_to_string(third.join("node_modules/pkg/index.js")).expect("read"),
+            "x"
+        );
 
         let other = tree("other", "{\"v\":2}");
         let k2 = key(&cache(), &setup, &other).expect("key");

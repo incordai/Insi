@@ -1,0 +1,6 @@
+# Maintainer ownership; branch protection must require owner review separately.
+*                         @blockmandev
+/crates/insi-core/        @blockmandev
+/crates/insi-loop/        @blockmandev
+/.github/workflows/       @blockmandev
+/packaging/               @blockmandev
