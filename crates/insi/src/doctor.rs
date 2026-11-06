@@ -168,7 +168,13 @@ fn lock_state(path: &Path) -> &'static str {
         Err(_) => return "unreadable",
     };
     match file.try_lock() {
-        Ok(()) => "available",
+        Ok(()) => {
+            if file.unlock().is_ok() {
+                "available"
+            } else {
+                "unavailable"
+            }
+        }
         Err(std::fs::TryLockError::WouldBlock) => "held",
         Err(_) => "unavailable",
     }
@@ -179,11 +185,13 @@ mod tests {
     use super::*;
 
     fn folder() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.claude/temp")
+            .join("../../.incord/temp")
             .join(format!(
-                "doctor-{}-{}",
+                "doctor-{}-{}-{}",
                 std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("clock")
@@ -228,6 +236,7 @@ mod tests {
         let file = std::fs::File::create(&lock).expect("lock");
         file.lock().expect("held");
         assert_eq!(lock_state(&lock), "held");
+        file.unlock().expect("release owner explicitly");
         drop(file);
         assert_eq!(lock_state(&lock), "available");
         std::fs::remove_dir_all(root).expect("cleanup");

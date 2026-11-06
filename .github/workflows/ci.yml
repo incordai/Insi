@@ -78,7 +78,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -94,6 +93,10 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "ci"
       - run: cargo llvm-cov nextest --workspace --all-features --locked --profile ci --lcov --output-path lcov.info
+      - name: Coverage summary
+        run: cargo llvm-cov report --summary-only >> "$GITHUB_STEP_SUMMARY"
+      - name: HTML coverage
+        run: cargo llvm-cov report --html
       - name: Preserve coverage and test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -101,18 +104,8 @@ jobs:
           name: coverage-and-junit
           path: |
             lcov.info
+            target/llvm-cov/html/
             target/nextest/ci/junit.xml
-      - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
-        if: success() && vars.CODECOV_ENABLED == 'true'
-        with:
-          files: lcov.info
-          use_oidc: true
-          fail_ci_if_error: true
-      - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
-        if: ${{ !cancelled() && vars.CODECOV_ENABLED == 'true' }}
-        with:
-          files: target/nextest/ci/junit.xml
-          use_oidc: true
 
   docs:
     name: documentation

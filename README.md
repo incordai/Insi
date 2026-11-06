@@ -39,7 +39,7 @@ not learned from, measured against a control.
 - [Contributing](#contributing) · [License](#license)
 
 [![CI](https://github.com/incordai/Insi/actions/workflows/ci.yml/badge.svg)](https://github.com/incordai/Insi/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/incordai/Insi/branch/main/graph/badge.svg)](https://codecov.io/gh/incordai/Insi)
+[Testing and outstanding work](docs/TESTING-AUDIT.md)
 
 ## How it works
 
