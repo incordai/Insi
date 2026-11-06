@@ -168,7 +168,15 @@ fn lock_state(path: &Path) -> &'static str {
         Err(_) => return "unreadable",
     };
     match file.try_lock() {
-        Ok(()) => "available",
+        Ok(()) => {
+            // Concurrent spawns may inherit descriptors briefly. A diagnostic
+            // must release its temporary lock before closing its handle.
+            if file.unlock().is_ok() {
+                "available"
+            } else {
+                "unavailable"
+            }
+        }
         Err(std::fs::TryLockError::WouldBlock) => "held",
         Err(_) => "unavailable",
     }
@@ -228,6 +236,7 @@ mod tests {
         let file = std::fs::File::create(&lock).expect("lock");
         file.lock().expect("held");
         assert_eq!(lock_state(&lock), "held");
+        file.unlock().expect("release owner explicitly");
         drop(file);
         assert_eq!(lock_state(&lock), "available");
         std::fs::remove_dir_all(root).expect("cleanup");

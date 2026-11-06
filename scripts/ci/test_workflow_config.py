@@ -22,7 +22,7 @@ def job_block(text, name):
 class PackagingRunner(unittest.TestCase):
     def test_packaging_is_pinned_to_a_runner_with_python_39(self):
         block = job_block(CI, 'packaging')
-        self.assertRegex(block, r'^    runs-on: ubuntu-24\.04\n', re.M)
+        self.assertRegex(block, re.compile(r'^    runs-on: ubuntu-24\.04\n', re.M))
 
     def test_one_python_failure_does_not_cancel_the_other(self):
         block = job_block(CI, 'packaging')
