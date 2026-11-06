@@ -135,11 +135,13 @@ jobs:
           files: lcov.info
           use_oidc: true
           fail_ci_if_error: true
-      - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         if: ${{ !cancelled() && vars.CODECOV_ENABLED == 'true' }}
         with:
           files: target/nextest/ci/junit.xml
+          report_type: test_results
           use_oidc: true
+          fail_ci_if_error: true
 
   docs:
     name: documentation
