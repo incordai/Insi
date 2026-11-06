@@ -169,6 +169,8 @@ fn lock_state(path: &Path) -> &'static str {
     };
     match file.try_lock() {
         Ok(()) => {
+            // Concurrent spawns may inherit descriptors briefly. A diagnostic
+            // must release its temporary lock before closing its handle.
             if file.unlock().is_ok() {
                 "available"
             } else {
