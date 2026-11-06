@@ -759,7 +759,7 @@ fn validate_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String
 fn eval_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String> {
     let store = store(flags)?;
     let worker = worker(flags)?;
-    let seeds = flags.number("seeds", 1)? as u32;
+    let seeds = seed_flag(flags)?;
     // With --lessons, each task is briefed with what earlier tasks taught.
     let lessons = if flags.has("lessons") {
         lessons_file(flags, work).all()?
@@ -884,6 +884,7 @@ fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String>
                 .to_string(),
         );
     }
+    let seeds = seed_flag(flags)?;
     let store = store(flags)?;
     let config = repo_config()?.1;
     let fair = report::fair_tasks(&store::read_results(results).unwrap_or_default());
@@ -938,7 +939,7 @@ fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String>
             strategies: &strategies,
             lessons: &lessons,
             steps: flags.number("steps", 5)? as u32,
-            seeds: flags.number("seeds", 1)? as u32,
+            seeds,
             margin,
             holdout_margin,
             jobs: jobs(flags)?,
@@ -1168,6 +1169,22 @@ fn jobs(flags: &Flags) -> Result<usize, String> {
     }
 }
 
+/// The `--seeds` count (default 1) for `insi eval` and `insi improve`.
+/// Called by: eval_cmd and improve_cmd, before any attempt is scheduled.
+/// Sibling: `jobs` does the same zero check for `--jobs`.
+fn seed_flag(flags: &Flags) -> Result<u32, String> {
+    seed_count(flags.number("seeds", 1)?)
+}
+
+/// Seeds are numbered `0..count` and carried as `u32`: zero runs nothing, and
+/// a larger count would wrap when narrowed, so both are refused.
+fn seed_count(n: u64) -> Result<u32, String> {
+    match n {
+        0 => Err("--seeds must be at least 1".to_string()),
+        n => u32::try_from(n).map_err(|_| format!("--seeds must be at most {}", u32::MAX)),
+    }
+}
+
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
 }
@@ -1331,5 +1348,28 @@ mod tests {
         assert!(half(tasks, "middle").is_err());
         assert!(half(vec![task("app-x", None)], "older").is_err());
         assert_eq!(topic(&task("watchman-1a2b3c4d", None)), "watchman");
+    }
+
+    #[test]
+    fn seed_counts_accept_one_and_the_u32_maximum_only() {
+        assert!(seed_count(0).is_err());
+        assert_eq!(seed_count(1), Ok(1));
+        assert_eq!(seed_count(4), Ok(4));
+        assert_eq!(seed_count(u32::MAX as u64), Ok(u32::MAX));
+        // 2^32 would wrap to 0 under `as u32`; it must be refused instead.
+        let over = seed_count(4_294_967_296).unwrap_err();
+        assert!(over.contains("at most"), "{over}");
+        assert!(seed_count(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn seed_flag_reads_the_default_and_rejects_bad_values() {
+        let args = |v: &str| Flags::parse(&["--seeds".to_string(), v.to_string()]).unwrap();
+        assert_eq!(seed_flag(&Flags::parse(&[]).unwrap()), Ok(1));
+        assert_eq!(seed_flag(&args("3")), Ok(3));
+        assert!(seed_flag(&args("0")).is_err());
+        assert!(seed_flag(&args("4294967296")).is_err());
+        assert!(seed_flag(&args("-1")).is_err());
+        assert!(seed_flag(&args("NaN")).is_err());
     }
 }
