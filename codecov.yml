@@ -1,0 +1,48 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+  individual_components:
+    - component_id: insi-core
+      name: insi-core
+      paths: [crates/insi-core/**]
+      statuses:
+        - type: project
+          target: 95%
+    - component_id: insi-loop
+      name: insi-loop
+      paths: [crates/insi-loop/**]
+      statuses:
+        - type: project
+          target: 93%
+    - component_id: insi-eval
+      name: insi-eval
+      paths: [crates/insi-eval/**]
+    - component_id: insi-memory
+      name: insi-memory
+      paths: [crates/insi-memory/**]
+    - component_id: insi-connectors
+      name: insi-connectors
+      paths: [crates/insi-connectors/**]
+    - component_id: insi
+      name: insi (cli)
+      paths: [crates/insi/**]
+
+comment:
+  layout: condensed_header, diff, components, condensed_files, condensed_footer
+  require_changes: true
+
+ignore:
+  - packaging/**
+  - docs/**

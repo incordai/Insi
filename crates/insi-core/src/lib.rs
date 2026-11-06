@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "test fixtures fail immediately on broken setup or assertions"
+    )
+)]
 //! Insi's shared vocabulary: the per-repo config, a benchmark task and its
 //! budget, the result of one run, and the error-signature normalizer that
 //! lets one failure be recognised the next time it happens.

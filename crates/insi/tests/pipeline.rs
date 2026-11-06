@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "integration fixtures fail immediately on broken setup"
+    )
+)]
 //! The whole Phase 1 pipeline on a small repository, in seconds: mine,
 //! validate, a learning run on the older half, `insi learn`, the newer half
 //! with lessons off and on, and the report.

@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "test fixtures fail immediately on broken setup or assertions"
+    )
+)]
 //! `insi` — the command line.
 //!
 //! ```text

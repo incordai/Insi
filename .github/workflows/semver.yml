@@ -1,0 +1,31 @@
+name: semver
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: API compatibility (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [insi-core, insi-eval, insi-memory, insi-loop, insi-connectors]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Find published baseline
+        id: baseline
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: python3 scripts/ci/semver_baseline.py "$PACKAGE" >> "$GITHUB_OUTPUT"
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2
+        if: steps.baseline.outputs.available == 'true'
+        with:
+          package: ${{ matrix.package }}
+          baseline-version: ${{ steps.baseline.outputs.version }}

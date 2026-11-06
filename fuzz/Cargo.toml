@@ -1,0 +1,32 @@
+[package]
+name = "insi-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+toml = "1.1"
+insi-core = { path = "../crates/insi-core", version = "0.1.0" }
+insi-connectors = { path = "../crates/insi-connectors", version = "0.1.0" }
+
+[[bin]]
+name = "task"
+path = "fuzz_targets/task.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connector"
+path = "fuzz_targets/connector.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

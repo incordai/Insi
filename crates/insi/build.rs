@@ -1,13 +1,13 @@
 //! Record build provenance; runtime diagnostics never need repository history.
 use std::process::Command;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "cargo:rustc-env=INSI_BUILD_TARGET={}",
-        std::env::var("TARGET").expect("Cargo TARGET")
+        std::env::var("TARGET")?
     );
     println!("cargo:rerun-if-changed=build.rs");
-    let repo = std::env::var("CARGO_MANIFEST_DIR").expect("Cargo manifest directory");
+    let repo = std::env::var("CARGO_MANIFEST_DIR")?;
     let git = |args: &[&str]| {
         let mut command = Command::new("git");
         command.current_dir(&repo).args(args);
@@ -46,4 +46,5 @@ fn main() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
+    Ok(())
 }

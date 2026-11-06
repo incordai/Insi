@@ -5,6 +5,10 @@ change is shown to work, not assumed to.
 
 ## Ways to help
 
+Questions, ideas and examples belong in
+[Discussions](https://github.com/incordai/Insi/discussions). Use the issue forms
+for reproducible bugs and scoped changes; report vulnerabilities privately.
+
 - **Report a bug.** Open an issue with the command you ran, what you
   expected, what happened, and the relevant lines of `results.jsonl` or the
   attempt's folder under `.insi-work/attempts/`. Leave out task definitions
@@ -97,6 +101,21 @@ Branches named `insi/...` are reserved for the pull requests Insi itself opens
 (`insi issue`, `insi improve --pr`).
 
 ## Releases
+
+Parser properties run with the regular Rust tests; see [fuzz/README.md](fuzz/README.md)
+for bounded sanitizer runs. Production `unwrap`, `expect` and explicit panics
+are Clippy warnings, denied in CI. Test fixtures have a documented test-only
+exception so setup failures remain clear.
+
+The coverage job emits LCOV and nextest JUnit reports and preserves both as
+workflow artifacts even when tests fail. `codecov.yml` tracks each crate;
+core/loop targets are 95%/93%, set below their initial local line-coverage
+measurements (97.0%/95.5% over 141 passing tests). Confirm these targets against
+the first Linux CI baseline. Other crates use their measured baseline.
+To activate Codecov reporting, install/authorize the Codecov GitHub App for this
+repository and set repository variable `CODECOV_ENABLED=true`. Uploads use
+GitHub OIDC, so no long-lived `CODECOV_TOKEN` secret is required. Keep uploads
+disabled until the account is connected; report generation still runs.
 
 Releases are cut by maintainers; see [RELEASING.md](RELEASING.md).
 

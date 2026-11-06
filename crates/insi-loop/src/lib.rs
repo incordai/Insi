@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "test fixtures fail immediately on broken setup or assertions"
+    )
+)]
 //! The improvement loop's parts that decide, and nothing that runs.
 //!
 //! The loop changes the harness — the folder of prompts and settings a

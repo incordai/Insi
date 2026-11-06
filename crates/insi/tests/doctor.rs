@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "integration fixtures fail immediately on broken setup"
+    )
+)]
 //! The CLI must dispatch diagnostics before Work can start trash cleanup.
 use std::path::PathBuf;
 

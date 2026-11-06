@@ -15,6 +15,13 @@ One version everywhere, or the release workflow refuses the tag:
 
 ## 2. Tag
 
+Semver checks run on pull requests and before release builds.
+Each public library crate is compared to its latest stable crates.io baseline
+using `cargo-semver-checks`. A crate with no published stable version is
+explicitly skipped for its first publication; registry errors fail the job.
+The `insi` package is a binary, so it has no Rust library API for this check.
+Its command-line compatibility remains covered by integration tests.
+
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
 ```

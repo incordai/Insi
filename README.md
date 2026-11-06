@@ -38,6 +38,9 @@ not learned from, measured against a control.
 - [Reference](#adding-insi-to-a-repository): every command in detail
 - [Contributing](#contributing) · [License](#license)
 
+[![CI](https://github.com/incordai/Insi/actions/workflows/ci.yml/badge.svg)](https://github.com/incordai/Insi/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/incordai/Insi/branch/main/graph/badge.svg)](https://codecov.io/gh/incordai/Insi)
+
 ## How it works
 
 ```text
@@ -727,6 +730,9 @@ cargo test --workspace --locked
 ```
 
 ## Contributing
+
+Use [Discussions](https://github.com/incordai/Insi/discussions) for questions,
+ideas and benchmark results. Use issues for reproducible bugs and scoped work.
 
 Contributions are welcome: bug reports, fixes, new stack detection, and
 benchmark results from your own repositories. Before opening a pull request,

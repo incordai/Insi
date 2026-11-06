@@ -1,0 +1,9 @@
+id = "example"
+source = "fixture"
+base = "base"
+reference = "reference"
+prompt = "Fix the example"
+hidden_tests = ["tests/example.rs"]
+check = ["runner", "{tests}"]
+[budget]
+wall_secs = 10

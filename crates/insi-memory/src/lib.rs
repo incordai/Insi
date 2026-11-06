@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "test fixtures fail immediately on broken setup or assertions"
+    )
+)]
 //! Insi's lessons.
 //!
 //! - [`writer`] turns one failed attempt and its verified fix into a lesson:

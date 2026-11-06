@@ -10,6 +10,9 @@ readme = "../../README.md"
 keywords = ["agents", "llm", "evaluation", "harness", "code"]
 categories = ["development-tools", "command-line-utilities"]
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "insi"
 path = "src/main.rs"

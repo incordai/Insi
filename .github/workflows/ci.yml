@@ -57,6 +57,7 @@ jobs:
           node-version: "22"
       - run: python -m unittest discover -s packaging/pip -p 'test_*.py'
       - run: python -m unittest discover -s scripts/checks -p 'test_*.py'
+      - run: python -m unittest discover -s scripts/ci -p 'test_*.py'
       - run: node packaging/npm/test.js
 
   msrv:
@@ -71,6 +72,47 @@ jobs:
           toolchain: 1.89.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo check --workspace --all-targets --locked
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+        with:
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.151
+      - run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "ci"
+      - run: cargo llvm-cov nextest --workspace --all-features --locked --profile ci --lcov --output-path lcov.info
+      - name: Preserve coverage and test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-and-junit
+          path: |
+            lcov.info
+            target/nextest/ci/junit.xml
+      - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+        if: success() && vars.CODECOV_ENABLED == 'true'
+        with:
+          files: lcov.info
+          use_oidc: true
+          fail_ci_if_error: true
+      - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
+        if: ${{ !cancelled() && vars.CODECOV_ENABLED == 'true' }}
+        with:
+          files: target/nextest/ci/junit.xml
+          use_oidc: true
 
   docs:
     name: documentation

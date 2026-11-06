@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["crates/insi-core", "crates/insi-eval", "crates/insi-memory", "crates/insi-loop", "crates/insi-connectors", "crates/insi"]
+exclude = ["fuzz"]
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
 
 [workspace.package]
 version = "0.1.0"
@@ -11,13 +17,15 @@ rust-version = "1.89"
 license = "Apache-2.0"
 repository = "https://github.com/incordai/insi"
 
-# Three dependencies, all already in incode's lock at these versions (see
+# Three runtime dependencies, all already in incode's lock at these versions (see
 # .incord/RULE_ACK for the vetting). Phase 1 drives git and the worker through
 # std processes: no HTTP client, async runtime or argument parser yet.
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
+# Test-only generators; no subprocess/fork features or runtime dependency.
+proptest = { version = "1", default-features = false, features = ["std"] }
 # Versions as well as paths, so each crate can be published: crates.io
 # resolves by version, the workspace by path.
 insi-core = { path = "crates/insi-core", version = "0.1.0" }
