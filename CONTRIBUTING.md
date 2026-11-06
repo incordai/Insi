@@ -62,8 +62,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo test --doc --workspace --locked
 ```
 
-Additional checks are `typos --hidden`, `zizmor --offline .github/workflows`,
-and `actionlint`. Intentional project names are in `_typos.toml`. Actions
+Additional checks are `typos --hidden`, `zizmor --offline .github`, and
+`actionlint`. The zizmor scope is `.github`, not only `.github/workflows`, so
+it also audits `.github/dependabot.yml`, as CI does. Intentional project names are in `_typos.toml`. Actions
 are pinned to full commit hashes with version comments for Dependabot.
 
 The local monitor in `.incord/watch.toml` checks optional evaluation records,

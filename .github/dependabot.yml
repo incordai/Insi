@@ -4,6 +4,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -11,11 +13,17 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: npm
     directory: /packaging/npm
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
   - package-ecosystem: pip
     directory: /packaging/pip
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
