@@ -2,7 +2,13 @@
 
 ## checks
 
-- `python3 scripts/ci/test_all.py`
+- `cargo fmt --check`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- `python3 -m unittest discover -s packaging/pip -p 'test_*.py'`
+- `python3 -m unittest discover -s scripts/checks -p 'test_*.py'`
+- `python3 -m unittest discover -s scripts/ci -p 'test_*.py'`
+- `node packaging/npm/test.js`
 
 ## Operation
 
