@@ -115,30 +115,41 @@ pub fn mine(source: &Path, opts: &Options) -> Result<Vec<Mined>, String> {
         if sha.is_empty() || parents.len() != 1 || !looks_like_fix(subject) {
             continue;
         }
-        let changed = git(
+        let changed = git_bytes(
             source,
             &[
                 "diff-tree",
                 "--no-commit-id",
                 "-r",
                 "--name-status",
+                "-z",
                 "-M",
                 sha,
             ],
         )?;
         let mut tests = Vec::new();
         let mut sources = 0;
-        for line in changed.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            let (status, path) = match parts[..] {
-                [status, path] => (status, path),
-                // A rename lists old and new; the new path is what exists.
-                [status, _, new] => (status, new),
-                _ => continue,
+        // With -z, status and paths are separate NUL-terminated fields.
+        // Git emits raw names, even when they contain tabs/newlines or would
+        // otherwise be C-quoted by core.quotePath. Do not trim this output.
+        let mut fields = changed.split(|b| *b == 0);
+        while let Some(status) = fields.next().filter(|s| !s.is_empty()) {
+            let path = fields.next().ok_or("git diff-tree: missing path")?;
+            // Renames (and copies) have two paths; only the destination exists
+            // in the commit being mined. Consume both before filtering.
+            let path = if matches!(status.first(), Some(b'R' | b'C')) {
+                fields.next().ok_or("git diff-tree: missing destination")?
+            } else {
+                path
             };
-            if status.starts_with('D') {
+            if status.starts_with(b"D") {
                 continue;
             }
+            // Task paths are UTF-8 strings. Never substitute replacement
+            // characters and then try to read a different Git pathname.
+            let Ok(path) = std::str::from_utf8(path) else {
+                continue;
+            };
             if is_test_file(path, &opts.test_markers) {
                 if is_safe_relative(path) {
                     tests.push(path.to_string());

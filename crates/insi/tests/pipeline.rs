@@ -61,6 +61,85 @@ fn git(dir: &Path, args: &[&str], date: Option<&str>) {
     );
 }
 
+/// Git's display quoting must never become part of a hidden test's pathname.
+#[test]
+fn mine_preserves_git_quoted_test_paths() {
+    let root = temp("quoted-paths");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    git(&repo, &["init", "-q"], None);
+    git(&repo, &["config", "user.name", "Test"], None);
+    git(&repo, &["config", "user.email", "test@example.com"], None);
+    git(&repo, &["config", "core.quotePath", "true"], None);
+    std::fs::write(repo.join("src/sum.ts"), "export const sum = 0;\n").unwrap();
+    std::fs::write(repo.join("tests/old.test.ts"), "renamed test\n").unwrap();
+    std::fs::write(repo.join("tests/deleted.test.ts"), "deleted test\n").unwrap();
+    git(&repo, &["add", "."], None);
+    git(&repo, &["commit", "-qm", "initial"], None);
+
+    let mut paths = vec!["tests/café.test.ts", "tests/renamed café.test.ts"];
+    // Windows forbids quotes and control characters in filenames.
+    if cfg!(unix) {
+        paths.extend([
+            "tests/tab\tname.test.ts",
+            "tests/quoted\"name.test.ts",
+            "tests/line\nname.test.ts",
+            "tests/trailing.test.ts\t",
+        ]);
+    }
+    std::fs::rename(repo.join("tests/old.test.ts"), repo.join(paths[1])).unwrap();
+    std::fs::remove_file(repo.join("tests/deleted.test.ts")).unwrap();
+    for path in paths.iter().filter(|p| **p != paths[1]) {
+        std::fs::write(repo.join(path), format!("test for {path}\n")).unwrap();
+    }
+    // A legal Unix filename can still be unsafe to restore across platforms.
+    #[cfg(unix)]
+    for path in ["tests/unsafe:test.ts", "tests/..\\escape.test.ts"] {
+        std::fs::write(repo.join(path), "unsafe test\n").unwrap();
+    }
+    std::fs::write(repo.join("src/sum.ts"), "export const sum = 3;\n").unwrap();
+    git(&repo, &["add", "-A"], None);
+    git(&repo, &["commit", "-qm", "fix: sum adds"], None);
+
+    let tasks = root.join("tasks");
+    let private = root.join("private");
+    let out = Command::new(env!("CARGO_BIN_EXE_insi"))
+        .args(["mine", "--source"])
+        .arg(&repo)
+        .args(["--check", "true", "--tasks"])
+        .arg(&tasks)
+        .arg("--private")
+        .arg(&private)
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let store = insi_eval::store::Store { tasks, private };
+    let mined = store.load().unwrap();
+    assert_eq!(mined.len(), 1, "one fix must become one task");
+    let task = &mined[0];
+    let mut actual = task.hidden_tests.clone();
+    actual.sort();
+    paths.sort();
+    assert_eq!(
+        actual, paths,
+        "preserve exact names, skip deleted and unsafe paths"
+    );
+    for path in paths {
+        assert_eq!(
+            store.hidden(task, path).unwrap(),
+            std::fs::read(repo.join(path)).unwrap(),
+            "hidden contents for {path:?}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// A repository with four dated fixes, each adding a source marker and a
 /// hidden test (`tests/<name>.txt`) holding that marker as a pattern.
 fn shop() -> PathBuf {
