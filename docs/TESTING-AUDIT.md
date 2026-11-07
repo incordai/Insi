@@ -1,5 +1,15 @@
 # Testing audit — 2026-11-06
 
+## Integration update
+
+[PR #40](https://github.com/incordai/Insi/pull/40) integrates PR #38's fixes
+with the Codecov removal and doctor fixture correction. The sections below
+record the earlier audit; fixes are now combined on `fix/free-test-automation`,
+pending review and main-branch integration. RUNBOOK lists individual standard
+commands because the engine held the custom Python wrapper for guard review.
+The sibling engine has no Git remote in its current checkout, so its tested
+Python fallback change remains local and is excluded from the Insi PR.
+
 ## Status
 
 GitHub issues are status reports, not proof of passing tests. Local checkout:
