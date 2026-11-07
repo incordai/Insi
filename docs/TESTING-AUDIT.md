@@ -2,6 +2,10 @@
 
 ## Integration update
 
+All Insi changes from PRs #38, #43 and #45 are now consolidated in PR #40,
+including the Unicode mining and Windows publication fixes. PR #40 is the
+single merge target; earlier PR references below describe the audit history.
+
 [PR #40](https://github.com/incordai/Insi/pull/40) integrates PR #38's fixes
 with the Codecov removal and doctor fixture correction. The sections below
 record the earlier audit; fixes are now combined on `fix/free-test-automation`,
