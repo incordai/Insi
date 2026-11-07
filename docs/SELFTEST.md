@@ -25,6 +25,12 @@ Insi's own sandbox was not configured; Codex ran with workspace-write permission
 CI additionally exposed Windows installer reader contention, filed as
 [issue #44](https://github.com/incordai/Insi/issues/44) for another Codex/Insi
 repair run. PR #43 should not be described as all-green while that job fails.
+The second real Codex worker produced commit `e098aa8` and Insi opened
+[draft PR #45](https://github.com/incordai/Insi/pull/45). Its Windows Python
+3.9 and 3.12 packaging jobs passed with the new race regression and original
+eight-process test. The fix refuses to replace a previously published cache
+binary. It was integrated into PR #43's candidate branch for combined CI;
+neither candidate was merged into main by this experiment.
 
 ## Earlier deterministic run
 
