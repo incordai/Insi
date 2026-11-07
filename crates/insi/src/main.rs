@@ -40,6 +40,7 @@ use std::process::ExitCode;
 
 mod context;
 mod doctor;
+mod experiment;
 mod harness_pr;
 mod hook;
 mod improve;
@@ -47,6 +48,7 @@ mod init;
 mod issue;
 mod learn;
 mod mcp;
+mod suggest;
 
 use insi_core::{Config, Task, Worker};
 use insi_eval::mine::{self, Options};
@@ -76,6 +78,12 @@ const USAGE: &str = "usage:
   insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"] [--to-memory]
                 [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
   insi report   [--results <file>]
+  insi experiment --plan <file>       (assess recorded component experiments; no worker runs)
+  insi suggest  [--repo <dir>] [--suggestion <json>] [--worker \"<cmd {prompt}>\"]
+                [--proposer \"<cmd {prompt}>\"] [--samples N] [--margin F] [--local]
+                (suggest a code improvement, freeze its benchmark, compare isolated checkouts;
+                open a draft PR only for a measured gain with passing regression checks)
+  insi improve --code [same options as suggest]
   insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
                 (the interface each task's worker is told: what its hidden tests import
                 that the base lacks)
@@ -180,6 +188,12 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err(USAGE.to_string());
     };
     let flags = Flags::parse(rest)?;
+    if command == "experiment" {
+        let plan = flags
+            .get("plan")
+            .ok_or("experiment requires --plan <file>")?;
+        return experiment::run(Path::new(plan));
+    }
     if command == "doctor" {
         let repo = flags
             .get("repo")
@@ -223,7 +237,9 @@ fn command_by_name(
         "validate" => validate_cmd(flags, work, results),
         "eval" => eval_cmd(flags, work, results),
         "learn" => learn_cmd(flags, work, results),
+        "improve" if flags.has("code") => suggest_cmd(flags, work),
         "improve" => improve_cmd(flags, work, results),
+        "suggest" => suggest_cmd(flags, work),
         "mcp" => {
             // stdout is the protocol from here on: nothing else may print.
             let lessons = lessons_file(flags, work);
@@ -460,6 +476,46 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
     }
     println!(
         "\nnext, from this folder:\n  insi mine\n  insi validate --jobs 2\n  insi eval --fair-only"
+    );
+    Ok(())
+}
+
+fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
+    let repo =
+        std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
+    let config = Config::load(&repo)?;
+    let worker = if flags.has("worker") {
+        Worker::command(flags.argv("worker"))
+    } else {
+        config.worker()
+    };
+    let proposer = if flags.has("proposer") {
+        Worker::command(flags.argv("proposer"))
+    } else {
+        config.proposer.clone().unwrap_or_else(|| worker.clone())
+    };
+    let margin = flags
+        .get("margin")
+        .unwrap_or("0.05")
+        .parse::<f64>()
+        .map_err(|e| e.to_string())?;
+    let outcome = suggest::run(
+        &suggest::Options {
+            repo: &repo,
+            work: &work.root,
+            config: &config,
+            worker: &worker,
+            proposer: &proposer,
+            suggestion: flags.get("suggestion").map(Path::new),
+            samples: flags.number("samples", 10)?,
+            margin,
+            local: flags.has("local"),
+        },
+        &issue::GhCli,
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&outcome).map_err(|e| e.to_string())?
     );
     Ok(())
 }

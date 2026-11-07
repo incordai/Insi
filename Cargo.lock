@@ -89,6 +89,7 @@ dependencies = [
  "insi-eval",
  "insi-loop",
  "insi-memory",
+ "serde",
  "serde_json",
 ]
 
