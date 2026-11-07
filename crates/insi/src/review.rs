@@ -909,7 +909,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    pub(crate) fn scratch() -> std::path::PathBuf {
+    #[cfg(unix)]
+    fn scratch() -> std::path::PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.incord/temp");
         std::fs::create_dir_all(&root).unwrap();
