@@ -16,3 +16,7 @@ Incord Memory reads the checks section after edits and runs the repository's
 commands. The runner prints a summary and returns failure if any check fails.
 Use Python 3, Node and Rust with rustfmt and Clippy installed. Coverage is
 generated separately by the CI coverage job; no service credentials are needed.
+
+See [Incord integration and capability overlap](INCORD-INTEGRATION.md) for the
+existing memory adapter, ownership boundaries and the proposed connection for
+code suggestion results.

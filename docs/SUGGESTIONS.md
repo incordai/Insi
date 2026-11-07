@@ -63,6 +63,20 @@ Qualifying results are `improved-local`. Without it, qualifying results request
 a draft PR automatically. Worker overrides follow existing argv parsing; use
 configuration argv arrays for arguments containing spaces.
 
+`--benchmarks <suite-json>` adds required project workloads and regression
+guardrails to the improvement gate. The suite is frozen before implementation;
+a faster primary metric cannot override a failing secondary check. Discovery
+can also return an optional `suite` object using the same format; an explicit
+operator suite takes precedence. See [project benchmark suites](BENCHMARKS.md)
+for detection, measurement methods, plan format and evidence limits.
+
+`--to-memory` retrieves bounded Incord context before discovery and sends a
+concise outcome with measurement references to the existing local engine.
+Unavailable memory does not change the experiment or publication gate. Pending
+delivery can be retried with `insi suggest --retry-memory <run-directory>`;
+that command invokes no worker and publishes no PR. See the
+[integration guide](INCORD-INTEGRATION.md) for delivery artifacts and ownership.
+
 `--suggestion` skips discovery and loads this format:
 
 ```json
@@ -114,3 +128,8 @@ fast path, preserved existing tests, and measured about 84% lower latency on
 three million empty-input calls over five pairs. It used `--local`; no live
 PR was created. This verifies orchestration and that workload, not autonomous
 discovery or general application performance.
+
+Memory delivery was also verified against the running local Incord engine using
+a worker-free saved decision. Replaying the same request after losing its local
+receipt returned the same item ID with `duplicate: true`. This verifies delivery
+and retry handling, not autonomous suggestion quality.

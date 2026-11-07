@@ -38,6 +38,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod benchmark;
 mod context;
 mod doctor;
 mod experiment;
@@ -49,6 +50,7 @@ mod issue;
 mod learn;
 mod mcp;
 mod suggest;
+mod suggest_memory;
 
 use insi_core::{Config, Task, Worker};
 use insi_eval::mine::{self, Options};
@@ -79,11 +81,15 @@ const USAGE: &str = "usage:
                 [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
   insi report   [--results <file>]
   insi experiment --plan <file>       (assess recorded component experiments; no worker runs)
+  insi benchmark --detect [--repo <dir>] (suggest project commands; executes nothing)
+  insi benchmark --plan <json> --repo <baseline> [--candidate <dir>] --output <new-dir>
   insi suggest  [--repo <dir>] [--suggestion <json>] [--worker \"<cmd {prompt}>\"]
-                [--proposer \"<cmd {prompt}>\"] [--samples N] [--margin F] [--local]
+                [--proposer \"<cmd {prompt}>\"] [--samples N] [--margin F] [--local] [--to-memory]
+                [--benchmarks <suite-json>] (additional required project workloads)
                 (suggest a code improvement, freeze its benchmark, compare isolated checkouts;
                 open a draft PR only for a measured gain with passing regression checks)
   insi improve --code [same options as suggest]
+  insi suggest --retry-memory <run-dir>  (deliver a saved decision only; no worker or PR)
   insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
                 (the interface each task's worker is told: what its hidden tests import
                 that the base lacks)
@@ -188,6 +194,64 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err(USAGE.to_string());
     };
     let flags = Flags::parse(rest)?;
+    if command == "benchmark" {
+        let repo =
+            std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
+        if flags.has("detect") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&benchmark::detect(&repo))
+                    .map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        let plan = benchmark::read(Path::new(
+            flags
+                .get("plan")
+                .ok_or("benchmark requires --plan <json> or --detect")?,
+        ))?;
+        let logs = PathBuf::from(
+            flags
+                .get("output")
+                .ok_or("benchmark requires a fresh --output <directory> for evidence")?,
+        );
+        std::fs::create_dir(&logs)
+            .map_err(|e| format!("benchmark output must be a new directory: {e}"))?;
+        let config = Config::load(&repo)?;
+        std::fs::write(
+            logs.join("plan.json"),
+            serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let result = if let Some(candidate) = flags.get("candidate") {
+            let candidate = std::fs::canonicalize(candidate).map_err(|e| e.to_string())?;
+            if candidate == repo {
+                return Err("baseline and candidate must be different directories".into());
+            }
+            benchmark::compare(&plan, &repo, &candidate, &config, &logs)
+        } else {
+            benchmark::baseline(&plan, &repo, &config, &logs)
+                .map(|v| serde_json::json!({"status":"baseline-only","workloads":v}))
+        };
+        let report = match &result {
+            Ok(v) => v.clone(),
+            Err(e) => serde_json::json!({"status":"failed","reason":e}),
+        };
+        std::fs::write(
+            logs.join("report.json"),
+            serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let report = result?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+        if report["qualified"] == false {
+            return Err("benchmark suite did not qualify; see report.json".into());
+        }
+        return Ok(());
+    }
     if command == "experiment" {
         let plan = flags
             .get("plan")
@@ -481,6 +545,11 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
 }
 
 fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
+    if let Some(dir) = flags.get("retry-memory") {
+        suggest_memory::retry(insi_memory::incord::address()?, Path::new(dir))?;
+        println!("memory decision stored");
+        return Ok(());
+    }
     let repo =
         std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
     let config = Config::load(&repo)?;
@@ -499,20 +568,28 @@ fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
         .unwrap_or("0.05")
         .parse::<f64>()
         .map_err(|e| e.to_string())?;
-    let outcome = suggest::run(
-        &suggest::Options {
-            repo: &repo,
-            work: &work.root,
-            config: &config,
-            worker: &worker,
-            proposer: &proposer,
-            suggestion: flags.get("suggestion").map(Path::new),
-            samples: flags.number("samples", 10)?,
-            margin,
-            local: flags.has("local"),
-        },
-        &issue::GhCli,
-    )?;
+    let memory = if flags.has("to-memory") {
+        Some(insi_memory::incord::address()?)
+    } else {
+        None
+    };
+    let options = suggest::Options {
+        repo: &repo,
+        work: &work.root,
+        config: &config,
+        worker: &worker,
+        proposer: &proposer,
+        suggestion: flags.get("suggestion").map(Path::new),
+        samples: flags.number("samples", 10)?,
+        margin,
+        local: flags.has("local"),
+        benchmarks: flags.get("benchmarks").map(Path::new),
+    };
+    let outcome = if memory.is_some() {
+        suggest::run_with_memory(&options, &issue::GhCli, memory)
+    } else {
+        suggest::run(&options, &issue::GhCli)
+    }?;
     println!(
         "{}",
         serde_json::to_string_pretty(&outcome).map_err(|e| e.to_string())?
