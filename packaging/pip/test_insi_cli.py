@@ -119,9 +119,38 @@ assert p.read_bytes() == b'complete-binary' * 10000
                 child.communicate(timeout=5)
         self.assertEqual(list(Path(self.env["INSI_CACHE_DIR"]).rglob("*.part")), [])
 
+    def test_racing_publisher_preserves_the_binary_already_returned_to_a_reader(self):
+        payload = b"complete binary"
+        digest = self.put({insi_cli.binary_name(): payload})
+        winner = Path(self.tmp.name) / "winner"
+        winner.write_bytes(payload)
+        link = os.link
+        replace = os.replace
+        rename = os.rename
+        publications = []
+
+        def race(publish, staged, binary):
+            # A competitor wins after any existence check but before the
+            # atomic publication. Its caller can already be using this file.
+            self.assertEqual(Path(staged).read_bytes(), payload)
+            self.assertFalse(Path(binary).exists())
+            link(winner, binary)
+            publications.append(binary)
+            return publish(staged, binary)
+
+        with mock.patch.object(insi_cli.os, "replace", side_effect=lambda *args: race(replace, *args)), \
+                mock.patch.object(insi_cli.os, "rename", side_effect=lambda *args: race(rename, *args)), \
+                mock.patch.object(insi_cli.os, "link", side_effect=lambda *args: race(link, *args)):
+            path = insi_cli.ensure(self.env, {self.name: digest})
+        self.assertEqual(publications, [path])
+        self.assertTrue(path.samefile(winner), "a reader's published binary was replaced")
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertEqual(list(path.parent.glob("*.part")), [])
+
     def test_failed_publication_leaves_no_binary_or_staging_file_and_can_retry(self):
         digest = self.put({insi_cli.binary_name(): b"complete binary"})
-        with mock.patch.object(insi_cli.os, "replace", side_effect=OSError("publish failed")):
+        publish = "rename" if os.name == "nt" else "link"
+        with mock.patch.object(insi_cli.os, publish, side_effect=OSError("publish failed")):
             with self.assertRaisesRegex(OSError, "publish failed"):
                 insi_cli.ensure(self.env, {self.name: digest})
         cache = Path(self.env["INSI_CACHE_DIR"])
