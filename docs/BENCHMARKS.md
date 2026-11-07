@@ -39,7 +39,9 @@ regressions, it runs the required suite on both clones. Every suite workload and
 the existing suggestion benchmark must qualify before a draft PR can be created.
 Tampering or failed measurements blocks publication. A qualifying PR includes
 the frozen plan and suite evidence under unique run-specific names; earlier
-benchmark files remain intact. This adds no auditor/fixer/proxy execution bridge.
+benchmark files remain intact. Auditor/fixer delegation is a separate opt-in
+[candidate execution mode](INCORD-CANDIDATE-API.md), not a permission granted by
+passing a suite.
 Discovery can return the same plan as an optional `suite` field in its suggestion
 JSON. Generated suites must pass the same validation and gate. An explicit
 `--benchmarks` plan takes precedence over a generated suite.

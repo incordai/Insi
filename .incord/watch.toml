@@ -20,3 +20,10 @@ command = "python3 scripts/checks/project_health.py disk"
 every_minutes = 60
 timeout_secs = 20
 paths = ["crates/insi-eval/src/run.rs", "crates/insi-eval/src/process.rs"]
+
+[[check]]
+name = "candidate approval denial prevents edit execution"
+command = "python3 scripts/checks/audit_bridge.py"
+every_minutes = 60
+timeout_secs = 120
+paths = ["crates/insi/src/audit_bridge.rs", "scripts/checks/audit_bridge.py"]

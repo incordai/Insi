@@ -41,6 +41,10 @@ not learned from, measured against a control.
 [![CI](https://github.com/incordai/Insi/actions/workflows/ci.yml/badge.svg)](https://github.com/incordai/Insi/actions/workflows/ci.yml)
 [Testing and outstanding work](docs/TESTING-AUDIT.md)
 
+[PR review, evidence and onboarding](docs/REVIEW.md) ·
+[Incord candidate execution](docs/INCORD-CANDIDATE-API.md) ·
+[Review research and next priorities](docs/REVIEW-RESEARCH.md)
+
 ## How it works
 
 ```text

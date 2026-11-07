@@ -151,17 +151,65 @@ fn call(addr: SocketAddr, request: &Value, item: &str) -> Result<(), String> {
 
 /// One HTTP/1.1 POST of a JSON body; the response body on a 2xx.
 fn post(addr: SocketAddr, path: &str, body: &str) -> Result<String, String> {
+    request(addr, "POST", path, body)
+}
+
+/// Bounded local REST calls for the engine's existing audit/owner interfaces.
+pub fn http(addr: SocketAddr, method: &str, path: &str, body: &Value) -> Result<Value, String> {
+    let raw = request(addr, method, path, &body.to_string())?;
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+fn request(addr: SocketAddr, method: &str, path: &str, body: &str) -> Result<String, String> {
+    request_wait(addr, method, path, body, DEADLINE)
+}
+
+/// Long-running local coder calls retain a bounded caller-selected deadline.
+pub fn http_wait(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    body: &Value,
+    seconds: u64,
+) -> Result<Value, String> {
+    if !(1..=3600).contains(&seconds) {
+        return Err("invalid engine call deadline".into());
+    }
+    let raw = request_wait(
+        addr,
+        method,
+        path,
+        &body.to_string(),
+        Duration::from_secs(seconds),
+    )?;
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+fn request_wait(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    body: &str,
+    deadline: Duration,
+) -> Result<String, String> {
+    if !addr.ip().is_loopback()
+        || !matches!(method, "GET" | "POST")
+        || !path.starts_with("/v1/")
+        || path.chars().any(|c| c.is_control() || c == ' ')
+    {
+        return Err("invalid local engine request".into());
+    }
     let unreachable =
         |e: std::io::Error| format!("the memory engine at {addr} is unreachable: {e}");
     let mut stream = TcpStream::connect_timeout(&addr, DEADLINE).map_err(unreachable)?;
     stream
-        .set_read_timeout(Some(DEADLINE))
+        .set_read_timeout(Some(deadline))
         .map_err(unreachable)?;
     stream
         .set_write_timeout(Some(DEADLINE))
         .map_err(unreachable)?;
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );

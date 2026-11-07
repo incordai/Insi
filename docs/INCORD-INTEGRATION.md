@@ -8,23 +8,26 @@ the existing local memory adapter; do not build another knowledge graph.
 `insi suggest --to-memory` / `insi improve --code --to-memory` opt into the
 connection. Without the flag, the workflow remains offline from memory.
 
-This is a memory-data connection, not integration with the engine's auditor,
-fixer or approval/proxy execution path. Insi still calls its configured worker
-through its own process runner. A stored memory decision grants no approval.
+`--to-memory` is a data connection. The separate opt-in `--audit-finding <id>`
+mode delegates candidate edits to the engine's auditor/coder and existing
+owner/proxy approval path. It requires the new service-side
+[candidate API](INCORD-CANDIDATE-API.md) to be deployed; this work changed service
+source but did not restart the running engine. A stored memory decision grants
+no approval. Standalone mode still uses Insi's configured worker.
 
-## Auditor, fixer and proxy: verified integration gap
+## Auditor, fixer and proxy: candidate adapter
 
 The service already implements these capabilities. Do not replace them with a
 second production fixer or approval engine in Insi:
 
 | Existing service component | Verified behavior | Current Insi connection |
 |---|---|---|
-| `audit.rs`: `FindingCategory::Improvement` and `run_finding_loop` | Reviews improvement findings through auditor/coder rounds; approved findings can enter configured auto-apply. | None: memory summaries are not audit findings. |
-| `audit.rs`: `apply_fix`, `apply_edit_gated` | Requests a find/replace, backs up the finding's actual file, edits it, runs the configured gate, keeps or restores it. | None: Insi uses a separate configured worker and candidate checkout. |
-| `api/settings_api.rs`: findings endpoints | Read one finding, approve/apply, dismiss, or resolve with a fixer report. | None: Insi neither reads a finding nor writes a finding result. |
-| `api/owner.rs`: `/v1/owner/enqueue` | Sends a decision to the existing owner/proxy console and its approval path. | None: the new adapter does not enqueue or consume an approval. |
-| `api/owner.rs`: `/v1/owner/proxy/active` | Reports the applicable proxy mode for a project. | None: memory connectivity is not a proxy-policy check. |
-| `proxy_coder.rs`: `ask_coder` | Existing proxy-to-coder review/do exchange; CLI source can edit, service source cannot access files. | None: this is an internal service function, not the memory `context` tool. |
+| `audit.rs`: improvement finding loop | Reviews improvement findings through auditor/coder rounds. | Reads an approved improvement; source must match its project/revision. |
+| `audit.rs`: coder and gated edit mechanics | Requests a find/replace, backs up, edits and keeps/reverts after tests. | New `apply_candidate` adapter reuses these mechanics on the isolated candidate. |
+| Findings endpoints | Read findings and retain conversations/status. | Candidate endpoints append outcomes without claiming the original is fixed. |
+| Owner/proxy console | Decides existing queued cards. | Candidate prepare uses that queue; execute requires a matching approved record. |
+| Proxy active/settings | Selects the applicable policy for a project. | Existing console/proxy machinery handles the card; client does not create another policy evaluator. |
+| `proxy_coder.rs` | Existing proxy-to-coder exchange. | Unchanged; candidate edits reuse the audit coder rather than creating a third model setting. |
 
 The external-fixer endpoints inspected are:
 
@@ -38,7 +41,7 @@ finding resolved, while `fixed: false` withdraws it. Neither is an appropriate
 way to record an unmerged improvement PR or an inconclusive benchmark.
 Do not call either just because a memory decision was stored.
 
-### Required execution connection
+### Execution contract
 
 The intended production flow is: **existing auditor improvement finding →
 existing approval/proxy policy → existing coder/fixer operating on an isolated
@@ -46,8 +49,9 @@ candidate → Insi's frozen benchmark and regressions → draft PR → owner mer
 Insi contributes measurement and PR qualification; Incord owns audit conversation,
 policy and the production edit executor.
 
-The inspected apply path does not provide that isolated execution contract.
-Completing it requires service-side support, not another call to `lesson_write`:
+The original apply path does not provide that isolated execution contract.
+The new candidate API adds separate service-side support, rather than treating
+`lesson_write` as an execution request:
 
 1. Bind one reviewed finding and its revision to a run, original project,
    baseline commit and isolated candidate. The finding remains about the original
@@ -69,9 +73,12 @@ Completing it requires service-side support, not another call to `lesson_write`:
 6. Test denial, stale approvals/findings, candidate scope escape, benchmark
    modification, failed checks and retries before enabling automatic execution.
 
-No auditor/fixer/proxy execution bridge has been implemented or tested by the
-memory adapter work. The existing direct-worker mode remains a standalone Insi
-mode; it must not be presented as execution governed by those service APIs.
+The candidate bridge source is implemented on both sides; scoped approval,
+refusal and gated-edit mechanics have development tests. A live approved coder
+round trip is unverified: no AI worker was invoked and the running service was
+not upgraded. See [rollout and recovery](INCORD-CANDIDATE-API.md). Direct-worker
+mode remains standalone and does not inherit engine approval merely by enabling
+memory storage.
 
 ## What is connected today
 
