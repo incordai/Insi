@@ -108,22 +108,25 @@ def ensure(env=os.environ, checksums=None):
             with source:
                 payload = source.read()
         binary.parent.mkdir(parents=True, exist_ok=True)
-        # Each installer owns its staging file. Atomic replacement publishes
-        # only complete bytes; concurrent installers publish identical data.
+        # Each installer owns its staging file; publish only complete bytes.
         fd, staged_name = tempfile.mkstemp(prefix=".insi-", suffix=".part", dir=binary.parent)
         staged = Path(staged_name)
         try:
             with os.fdopen(fd, "wb") as output:
                 output.write(payload)
             staged.chmod(0o755)
-            # Another installer may already have finished (including a
-            # process currently executing the binary on Windows).
-            if not binary.is_file():
-                try:
-                    os.replace(staged, binary)
-                except OSError:
-                    if not binary.is_file():
-                        raise
+            try:
+                # Publication must atomically refuse an existing destination:
+                # a check followed by replace can overwrite a winner that a
+                # caller is already reading or executing. Windows rename never
+                # overwrites; Unix rename does, so use a hard link there.
+                if os.name == "nt":
+                    os.rename(staged, binary)
+                else:
+                    os.link(staged, binary)
+            except FileExistsError:
+                if not binary.is_file():
+                    raise
         finally:
             staged.unlink(missing_ok=True)
     return binary

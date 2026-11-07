@@ -337,6 +337,17 @@ fn work_in(
     let title = format!("Fix #{}: {}", issue.number, issue.title.trim());
     git(tree, &["commit", "--quiet", "-m", &title])?;
 
+    if !ran.success() {
+        return Ok(Outcome::Kept {
+            branch: branch.to_string(),
+            why: if ran.timed_out {
+                "the worker timed out; candidate kept locally".into()
+            } else {
+                "the worker failed; candidate kept locally".into()
+            },
+        });
+    }
+
     // The check runs the code the worker wrote: inside the sandbox too.
     let check = step(cfg, &cfg.test_cmd, tree, Duration::from_secs(30 * 60))?;
     if !check.success() {
@@ -520,6 +531,46 @@ mod tests {
             .map(String::from)
             .to_vec(),
         )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_worker_changes_are_kept_local_even_when_checks_pass() {
+        let (work, origin) = repo();
+        let hub = FakeHub {
+            issue: issue(&["insi"], true),
+            created: RefCell::new(Vec::new()),
+        };
+        let cfg = config(&["git", "--version"]);
+        let worker = Worker::command(vec![
+            "sh".into(),
+            "-c".into(),
+            "git config --file greet.txt issue.prompt partial; exit 1".into(),
+            "{prompt}".into(),
+        ]);
+        let outcome = work_issue(
+            &Run {
+                repo: &work,
+                number: 42,
+                config: &cfg,
+                worker: &worker,
+                work_root: &temp("failed-worker"),
+                briefing: "",
+                draft: true,
+            },
+            &hub,
+        )
+        .expect("worker outcome");
+        assert!(matches!(outcome, Outcome::Kept { .. }), "{outcome:?}");
+        assert!(hub.created.borrow().is_empty());
+        assert!(git(
+            &origin,
+            &["rev-parse", "--verify", "refs/heads/insi/issue-42"]
+        )
+        .is_err());
+        assert!(git(&work, &["show", "insi/issue-42:greet.txt"])
+            .unwrap()
+            .contains("partial"));
     }
 
     fn config(check: &[&str]) -> Config {

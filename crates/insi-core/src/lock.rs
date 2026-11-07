@@ -18,6 +18,14 @@ pub struct FileLock {
     _file: File,
 }
 
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        // A duplicate or fork-inherited descriptor can keep the open-file
+        // description alive after close. Release the guard's lock explicitly.
+        let _ = self._file.unlock();
+    }
+}
+
 /// Take the lock beside `path`, waiting for any other holder.
 pub fn lock_beside(path: &Path) -> Result<FileLock, String> {
     let lock_path = sidecar(path);
@@ -44,6 +52,30 @@ fn sidecar(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_guard_releases_lock_even_with_a_duplicate_descriptor() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.claude/temp")
+            .join(format!("guard-release-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch");
+        let data = root.join("results");
+        let owner = lock_beside(&data).expect("owner");
+        let inherited = owner._file.try_clone().expect("duplicate descriptor");
+        let probe = OpenOptions::new()
+            .write(true)
+            .open(sidecar(&data))
+            .expect("probe");
+        assert!(probe.try_lock().is_err(), "owner still holds the lock");
+        drop(owner);
+        probe
+            .try_lock()
+            .expect("guard drop must unlock despite the duplicate");
+        probe.unlock().expect("release probe");
+        drop(inherited);
+        drop(probe);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
