@@ -31,6 +31,24 @@ insi review --repo . --base HEAD~1 --plan .insi/review.json --output .incord/tem
 insi review --repo . --pr 47 --plan .insi/review.json --output .incord/temp/pr-review --with-memory
 ```
 
+### Model review with the local `claude -p` login
+
+```sh
+python3 scripts/review/review_pr.py 47           # print findings, post nothing
+python3 scripts/review/review_pr.py 47 --post    # also post one COMMENT-only review
+python3 scripts/review/review_pr.py --all --post # every open, non-draft PR
+```
+
+This runs on a maintainer's machine with its own `gh` and `claude` logins; no key
+is stored in the repo. It builds a throwaway checkout of the PR head, sends only
+the diff (split by file) to `claude -p` with no tools, and publishes through
+`insi review-publish`, so the review is COMMENT-only and a head already reviewed
+is skipped. PR code is never executed: the generated plan's only check is
+`git rev-parse HEAD`. Needs `target/debug/insi` (`cargo build -p insi`) or
+`INSI_BIN`. The model sees limited context around each change, so treat
+findings as leads to verify, not verdicts. It cannot approve or merge; a
+branch-protection review is still a human step.
+
 Plans are explicit operator inputs. PR descriptions, comments and modified PR
 configuration do not select executable commands. The review clone contains only
 committed files; the owner's uncommitted edits remain in the original checkout.

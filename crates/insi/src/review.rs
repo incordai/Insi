@@ -347,7 +347,10 @@ pub fn collect(
         let outcome = match out {
             Ok(out) => {
                 std::fs::write(
-                    output.join(format!("{}.log", tool.name)),
+                    // `tool-` keeps a tool's log apart from `check-N.log` and
+                    // `repro-*.log`; the plain `<name>.log` let a tool named
+                    // `check-0` have its output overwritten by the first check.
+                    output.join(format!("tool-{}.log", tool.name)),
                     format!("{}\n{}", out.stdout, out.stderr),
                 )
                 .map_err(|e| e.to_string())?;
@@ -1057,6 +1060,44 @@ mod tests {
         assert_eq!(report["complete"], false);
         assert_eq!(report["tools"][0]["status"], "unavailable");
         assert_eq!(report["checks"][0]["passed"], false);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+    // Shows a tool named `check-0` and the first full check keep separate log
+    // files; before the fix both wrote `check-0.log` and the tool's output was
+    // lost. Calls `collect` directly with one tool and one check.
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_log_is_not_overwritten_by_a_check_log_of_the_same_name() {
+        let d = scratch();
+        git(&d, &["init", "--quiet"]).unwrap();
+        git(&d, &["config", "user.name", "Test"]).unwrap();
+        git(&d, &["config", "user.email", "test@localhost"]).unwrap();
+        std::fs::write(d.join("code"), "working").unwrap();
+        git(&d, &["add", "code"]).unwrap();
+        git(&d, &["commit", "--quiet", "-m", "baseline"]).unwrap();
+        let base = git(&d, &["rev-parse", "HEAD"]).unwrap();
+        let logs = d.join(".git/logs-review");
+        std::fs::create_dir(&logs).unwrap();
+        let mut p = plan();
+        p.full_checks = vec![vec!["sh".into(), "-c".into(), "echo check-output".into()]];
+        p.tools.push(Tool {
+            name: "check-0".into(),
+            command: vec!["sh".into(), "-c".into(), "echo '{\"findings\":[]}'".into()],
+            format: "json".into(),
+            accepted_exits: vec![0],
+            timeout_secs: 5,
+        });
+        collect(&d, &base, &p, &logs, &Config::default()).unwrap();
+        let tool_log = std::fs::read_to_string(logs.join("tool-check-0.log")).unwrap();
+        let check_log = std::fs::read_to_string(logs.join("check-0.log")).unwrap();
+        assert!(
+            tool_log.contains("findings"),
+            "tool output kept: {tool_log}"
+        );
+        assert!(
+            check_log.contains("check-output"),
+            "check output kept: {check_log}"
+        );
         std::fs::remove_dir_all(d).unwrap();
     }
     // Shows a local `--base main` is resolved in the owner's repo, where the

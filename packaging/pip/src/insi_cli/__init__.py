@@ -83,25 +83,19 @@ _NO_HARD_LINKS = frozenset(
 )
 
 
-# Publish `payload` at `path` on a filesystem that cannot hard-link, still
-# refusing to overwrite: O_CREAT|O_EXCL fails with FileExistsError if the
-# destination exists, so a winner another process may be running is never
-# touched. The file is created without execute permission and made
-# executable only after every byte is written, and it is removed if anything
-# fails, so a half-written file is never left looking like a finished binary.
-def _create_exclusive(path, payload):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
-    try:
-        try:
-            view = memoryview(payload)
-            while view:
-                view = view[os.write(fd, view):]
-        finally:
-            os.close(fd)
-        os.chmod(path, 0o755)
-    except BaseException:
-        Path(path).unlink(missing_ok=True)
-        raise
+# Publish an already complete, executable `staged` file at `binary` on a
+# filesystem that cannot hard-link. It refuses an existing destination (a
+# winner another process may be running is never touched) and then renames the
+# staged file into place in one step, so a reader sees either no file or the
+# whole binary. The earlier version created the destination first and wrote
+# into it, which let a second installer see a part-written, non-executable
+# file. Two installers racing past the check both rename identical verified
+# bytes; the loser's rename swaps in an equal file and a process already
+# running the first keeps its own copy. Callers: ensure.
+def _publish_without_links(staged, binary):
+    if os.path.lexists(binary):
+        raise FileExistsError(errno.EEXIST, "binary already published", str(binary))
+    os.replace(staged, binary)
 
 
 def ensure(env=os.environ, checksums=None):
@@ -155,8 +149,9 @@ def ensure(env=os.environ, checksums=None):
                     os.rename(staged, binary)
                 else:
                     # A filesystem without hard links cannot take the link;
-                    # fall back to an exclusive create, which refuses to
-                    # overwrite in the same way. Other errors are raised.
+                    # fall back to renaming the complete staged file into
+                    # place, still refusing an existing binary. Other errors
+                    # are raised.
                     try:
                         os.link(staged, binary)
                     except FileExistsError:
@@ -164,7 +159,7 @@ def ensure(env=os.environ, checksums=None):
                     except OSError as e:
                         if e.errno not in _NO_HARD_LINKS:
                             raise
-                        _create_exclusive(binary, payload)
+                        _publish_without_links(staged, binary)
             except FileExistsError:
                 if not binary.is_file():
                     raise

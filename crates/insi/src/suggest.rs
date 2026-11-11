@@ -108,8 +108,12 @@ pub fn run_with_memory(
     report["samples"] = json!(o.samples);
     save(&dir.join("report.json"), &report)?;
     if o.audit_finding.is_some() && dir.join("engine-candidate.json").exists() {
-        if let Err(error) =
-            crate::audit_bridge::report(insi_memory::incord::address()?, &dir, &report)
+        // A `?` here returned from the whole function when the engine address
+        // could not be found, dropping a finished run's result and skipping the
+        // memory delivery below. The report is best effort, so any failure,
+        // including the address lookup, only prints and the run's result stands.
+        if let Err(error) = insi_memory::incord::address()
+            .and_then(|addr| crate::audit_bridge::report(addr, &dir, &report))
         {
             eprintln!("insi: audit outcome report remains local: {error}");
         }

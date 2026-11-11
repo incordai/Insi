@@ -190,13 +190,36 @@ assert p.read_bytes() == b'complete-binary' * 10000
         self.assertEqual(path.read_bytes(), winner_bytes)
         self.assertEqual(list(path.parent.glob("*.part")), [])
 
-    # A write that fails part-way in the fallback must not leave a file that
-    # looks like a finished binary, nor a staging file, and a retry works.
+    # In the fallback the binary must appear only by renaming a staged file
+    # that is already complete and executable, so a reader can never see a
+    # part-written one. Before the fix the destination was created first and
+    # written into afterwards.
     @unittest.skipIf(os.name == "nt", "Windows publishes with rename, not a link")
-    def test_no_hard_link_fallback_removes_a_half_written_binary(self):
+    def test_no_hard_link_fallback_publishes_only_a_complete_executable_file(self):
+        payload = b"complete binary"
+        digest = self.put({insi_cli.binary_name(): payload})
+        real_replace = os.replace
+        seen = []
+
+        def check_then_replace(staged, binary):
+            seen.append(
+                (Path(staged).read_bytes(), os.access(staged, os.X_OK), Path(binary).exists())
+            )
+            real_replace(staged, binary)
+
+        with mock.patch.object(insi_cli.os, "link", side_effect=OSError(errno.EPERM, "no hard links")), \
+                mock.patch.object(insi_cli.os, "replace", side_effect=check_then_replace):
+            path = insi_cli.ensure(self.env, {self.name: digest})
+        self.assertEqual(seen, [(payload, True, False)])
+        self.assertEqual(path.read_bytes(), payload)
+
+    # A rename that fails in the fallback must leave no binary and no staging
+    # file, and a retry works.
+    @unittest.skipIf(os.name == "nt", "Windows publishes with rename, not a link")
+    def test_no_hard_link_fallback_failure_leaves_nothing_behind(self):
         digest = self.put({insi_cli.binary_name(): b"complete binary"})
         with mock.patch.object(insi_cli.os, "link", side_effect=OSError(errno.EPERM, "no hard links")), \
-                mock.patch.object(insi_cli.os, "write", side_effect=OSError(errno.ENOSPC, "disk full")):
+                mock.patch.object(insi_cli.os, "replace", side_effect=OSError(errno.ENOSPC, "disk full")):
             with self.assertRaises(OSError):
                 insi_cli.ensure(self.env, {self.name: digest})
         cache = Path(self.env["INSI_CACHE_DIR"])
