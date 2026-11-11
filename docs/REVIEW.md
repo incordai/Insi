@@ -37,17 +37,31 @@ insi review --repo . --pr 47 --plan .insi/review.json --output .incord/temp/pr-r
 python3 scripts/review/review_pr.py 47           # print findings, post nothing
 python3 scripts/review/review_pr.py 47 --post    # also post one COMMENT-only review
 python3 scripts/review/review_pr.py --all --post # every open, non-draft PR
+python3 scripts/review/review_pr.py 47 --post --force # review a head again
 ```
 
 This runs on a maintainer's machine with its own `gh` and `claude` logins; no key
 is stored in the repo. It builds a throwaway checkout of the PR head, sends only
-the diff (split by file) to `claude -p` with no tools, and publishes through
-`insi review-publish`, so the review is COMMENT-only and a head already reviewed
-is skipped. PR code is never executed: the generated plan's only check is
-`git rev-parse HEAD`. Needs `target/debug/insi` (`cargo build -p insi`) or
-`INSI_BIN`. The model sees limited context around each change, so treat
-findings as leads to verify, not verdicts. It cannot approve or merge; a
-branch-protection review is still a human step.
+the diff (split by file, and a large file by hunk) to `claude -p` with no tools,
+and publishes through `insi review-publish`, so the review is COMMENT-only. A
+posting run first checks whether this `gh` login already reviewed the PR's
+current head and skips it; model findings vary between runs, so without that a
+scheduled run would post again on every pass. PR code is never executed: the
+generated plan's only check is `git rev-parse HEAD`. Needs `target/debug/insi`
+(`cargo build -p insi`) or `INSI_BIN`. The model sees limited context around
+each change, so treat findings as leads to verify, not verdicts. It cannot
+approve or merge; a branch-protection review is still a human step.
+
+`claude` runs from an empty temporary folder with
+`--setting-sources user --strict-mcp-config --disable-slash-commands`. Run from
+the PR checkout, it would load the PR's own `.claude/settings.json` (whose hooks
+run shell commands), `.mcp.json` and `CLAUDE.md`; a live probe confirmed a PR
+hook ran and a PR `CLAUDE.md` changed the answer before this was fixed.
+
+To run it unattended, schedule `review_pr.py --all --post` (for example with a
+launchd agent or cron) with `PATH` holding `gh`, `claude`, `git` and `python3`.
+A `claude` browser sign-in expires; `claude setup-token` makes a long-lived
+login for unattended jobs.
 
 Plans are explicit operator inputs. PR descriptions, comments and modified PR
 configuration do not select executable commands. The review clone contains only

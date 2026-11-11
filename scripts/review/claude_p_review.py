@@ -14,6 +14,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 CHUNK = 100_000  # characters of diff per model call; bigger diffs are split by file
@@ -47,38 +48,76 @@ def git(*args):
     ).stdout
 
 
-# Split a diff into pieces under CHUNK characters, never inside a file unless
-# one file alone is larger than CHUNK (then it is cut and marked). The first
-# version cut the whole diff at 120k characters and silently skipped the rest
-# of a big PR; this keeps every file in some piece. Callers: main.
+# Split one file's diff that is larger than CHUNK at its hunk (`@@`) lines,
+# repeating the file header on every piece so the model still knows the path.
+# A single hunk larger than CHUNK raises: cutting it would leave part of the
+# change unreviewed while the review still reported as complete (the previous
+# version did that). Callers: chunks.
+def split_file(part):
+    head, *hunks = re.split(r"(?m)^(?=@@ )", part)
+    out, cur = [], head
+    for hunk in hunks:
+        if len(head) + len(hunk) > CHUNK:
+            raise RuntimeError(f"one hunk is larger than {CHUNK} characters: {head.splitlines()[0]}")
+        if len(cur) + len(hunk) > CHUNK:
+            out.append(cur)
+            cur = head
+        cur += hunk
+    out.append(cur)
+    return out
+
+
+# Split a diff into pieces of at most CHUNK characters, never inside a file
+# unless one file alone is larger (then split_file cuts it at hunk lines).
+# The first version cut the whole diff at 120k characters and silently skipped
+# the rest of a big PR; this keeps every line in some piece. Callers: main.
 def chunks(diff):
     files = re.split(r"(?m)^(?=diff --git )", diff)
     out, cur = [], ""
     for part in files:
         if not part:
             continue
-        if len(part) > CHUNK:
-            part = part[:CHUNK] + "\n[file diff truncated]\n"
-        if cur and len(cur) + len(part) > CHUNK:
-            out.append(cur)
-            cur = ""
-        cur += part
+        for piece in split_file(part) if len(part) > CHUNK else [part]:
+            if cur and len(cur) + len(piece) > CHUNK:
+                out.append(cur)
+                cur = ""
+            cur += piece
     if cur:
         out.append(cur)
     return out
+
+
+# The `claude` command line. The PR checkout is the working directory of this
+# script, and a PR can add `.claude/settings.json` (whose hooks run shell
+# commands), `.mcp.json` (servers it starts) or `CLAUDE.md` (text that steers
+# the model). So claude runs from an empty folder outside the checkout, loads
+# only the owner's user settings, starts no MCP server and no tool, and keeps
+# no session. `--bare` would also skip the keychain login, so it is not used.
+# Callers: ask.
+CLAUDE = [
+    "claude", "-p",
+    "--tools", "",
+    "--setting-sources", "user",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+    "--output-format", "text",
+]
 
 
 # Send one diff piece to `claude -p` and return its findings list; raises when
 # the model fails or answers without JSON so a broken review is never reported
 # as a clean one. Callers: main (through the thread pool).
 def ask(piece):
-    out = subprocess.run(
-        ["claude", "-p", "--tools", "", "--no-session-persistence", "--output-format", "text"],
-        input=PROMPT + piece,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    with tempfile.TemporaryDirectory(prefix="insi-claude-") as empty:
+        out = subprocess.run(
+            CLAUDE,
+            cwd=empty,
+            input=PROMPT + piece,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
     if out.returncode != 0:
         raise RuntimeError("claude -p failed: " + out.stderr.strip()[:500])
     match = re.search(r"\{.*\}", out.stdout, re.S)
@@ -103,8 +142,8 @@ def main():
     # base branch's current tip also showed the reverse of every newer base
     # commit, so the model reviewed changes the PR never made.
     diff = git("diff", "--no-ext-diff", "--no-textconv", f"--unified={CONTEXT}", f"{base}...HEAD")
-    pieces = chunks(diff)
     try:
+        pieces = chunks(diff)
         with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
             found = [f for part in pool.map(ask, pieces) for f in part]
     except (RuntimeError, ValueError, subprocess.TimeoutExpired) as err:

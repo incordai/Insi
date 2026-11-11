@@ -49,12 +49,32 @@ def checkout(number, base, head, work):
     return src
 
 
+# True when the logged-in `gh` user already posted an Insi review for this
+# exact head. The marker `<!-- insi-review:<head>:` is the one
+# `insi review-publish` writes (review.rs, review_marker). Model findings vary
+# between runs, so without this check a scheduled run would post a new review
+# on the same head every time. Callers: review.
+def reviewed(number, head):
+    login = run(["gh", "api", "user", "--jq", ".login"])
+    pages = json.loads(run(["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews", "--paginate", "--slurp"]))
+    marker = f"<!-- insi-review:{head}:"
+    return any(
+        r.get("user", {}).get("login") == login and marker in (r.get("body") or "")
+        for page in pages
+        for r in page
+    )
+
+
 # Review one PR: build the checkout, run `insi review` with the model plan,
 # print a summary, and with post=True publish the report as a COMMENT review.
+# A posting run skips a head this login already reviewed unless force=True.
 # Callers: main.
-def review(number, post):
+def review(number, post, force=False):
     info = json.loads(run(["gh", "pr", "view", str(number), "--json", "baseRefOid,headRefOid,title"]))
     base, head = info["baseRefOid"], info["headRefOid"]
+    if post and not force and reviewed(number, head):
+        print(f"PR #{number}: head {head[:7]} already reviewed; skipped")
+        return
     work = os.path.join(REPO, ".incord", "temp", f"review-pr-{number}-{int(time.time())}")
     os.makedirs(work)
     src = checkout(number, base, head, work)
@@ -90,12 +110,14 @@ def review(number, post):
         print(run([INSI, "review-publish", "--repo", REPO, "--pr", str(number), "--report", os.path.join(out, "report.json")]))
 
 
-# Read the command line: a PR number or --all, and --post to publish. Callers:
-# the script entry point below.
+# Read the command line: a PR number or --all, --post to publish and --force
+# to review a head again. One failing PR does not stop the others; the exit
+# code is 1 if any failed. Callers: the script entry point below.
 def main():
     args = sys.argv[1:]
     post = "--post" in args
-    args = [a for a in args if a != "--post"]
+    force = "--force" in args
+    args = [a for a in args if a not in ("--post", "--force")]
     if args == ["--all"]:
         listed = json.loads(run(["gh", "pr", "list", "--state", "open", "--json", "number,isDraft"]))
         numbers = [p["number"] for p in listed if not p["isDraft"]]
@@ -103,9 +125,14 @@ def main():
         numbers = [int(args[0])]
     else:
         raise SystemExit(__doc__)
+    failed = 0
     for number in numbers:
-        review(number, post)
-    return 0
+        try:
+            review(number, post, force)
+        except SystemExit as err:
+            print(f"PR #{number}: {err}", file=sys.stderr)
+            failed = 1
+    return failed
 
 
 if __name__ == "__main__":

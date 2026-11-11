@@ -31,6 +31,25 @@ class Ask(unittest.TestCase):
         with mock.patch.object(adapter.subprocess, "run", return_value=answer(text)):
             self.assertEqual(adapter.ask("diff")[0]["file"], "a.rs")
 
+    # claude must not start inside the PR checkout, where a PR's own
+    # .claude/settings.json hooks, .mcp.json servers and CLAUDE.md would load.
+    def test_claude_runs_from_an_empty_folder_with_project_settings_off(self):
+        calls = []
+
+        def record(cmd, **kw):
+            calls.append((cmd, kw["cwd"], os.listdir(kw["cwd"])))
+            return answer('{"findings":[]}')
+
+        with mock.patch.object(adapter.subprocess, "run", side_effect=record):
+            adapter.ask("diff")
+        cmd, cwd, listing = calls[0]
+        self.assertNotEqual(os.path.realpath(cwd), os.path.realpath(os.getcwd()))
+        self.assertEqual(listing, [])
+        self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "user")
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+        self.assertIn("--strict-mcp-config", cmd)
+        self.assertFalse(os.path.exists(cwd), "the empty folder is removed")
+
     def test_a_failed_model_call_is_an_error(self):
         with mock.patch.object(adapter.subprocess, "run", return_value=answer("", 1)):
             with self.assertRaises(RuntimeError):
@@ -47,6 +66,26 @@ class Chunks(unittest.TestCase):
         joined = "".join(pieces)
         for i in range(5):
             self.assertIn(f"diff --git a/f{i} b/f{i}", joined)
+
+    # One file bigger than CHUNK is split at its hunks, not cut: every hunk is
+    # sent, and every piece still names the file. The old code dropped the end.
+    def test_one_huge_file_is_split_at_hunks_without_dropping_any(self):
+        header = "diff --git a/big b/big\n--- a/big\n+++ b/big\n"
+        hunks = [f"@@ -{i},3 +{i},3 @@\n" + f"+line {i}\n" * 3000 for i in range(10)]
+        pieces = adapter.chunks(header + "".join(hunks))
+        self.assertGreater(len(pieces), 1)
+        self.assertTrue(all(len(p) <= adapter.CHUNK for p in pieces))
+        self.assertTrue(all(p.startswith(header) for p in pieces))
+        joined = "".join(pieces)
+        for i in range(10):
+            self.assertIn(f"@@ -{i},3 +{i},3 @@", joined)
+
+    # A single hunk that alone exceeds CHUNK cannot be split safely, so the
+    # review fails instead of reporting a partly read change as complete.
+    def test_a_hunk_too_large_to_send_fails_the_review(self):
+        diff = "diff --git a/big b/big\n@@ -1 +1 @@\n" + "+x\n" * (adapter.CHUNK // 2)
+        with self.assertRaises(RuntimeError):
+            adapter.chunks(diff)
 
 
 class ThreeDots(unittest.TestCase):
