@@ -84,7 +84,14 @@ def ask(piece):
     match = re.search(r"\{.*\}", out.stdout, re.S)
     if not match:
         raise RuntimeError("model did not return JSON")
-    return json.loads(match.group(0)).get("findings", [])
+    data = json.loads(match.group(0))
+    # A missing, null or wrongly shaped `findings` must fail the review, not
+    # read as "no findings": the old `.get("findings", [])` made a broken
+    # model answer look like a clean review.
+    found = data.get("findings") if isinstance(data, dict) else None
+    if not isinstance(found, list) or not all(isinstance(f, dict) for f in found):
+        raise RuntimeError("model answer has no findings list")
+    return found
 
 
 # Review the diff base..HEAD in pieces, drop malformed or repeated findings and
@@ -92,7 +99,10 @@ def ask(piece):
 # incomplete. Callers: the script entry point below.
 def main():
     base = sys.argv[1]
-    diff = git("diff", "--no-ext-diff", "--no-textconv", f"--unified={CONTEXT}", base, "HEAD")
+    # Three dots diff against the merge-base, as GitHub does. Two dots from the
+    # base branch's current tip also showed the reverse of every newer base
+    # commit, so the model reviewed changes the PR never made.
+    diff = git("diff", "--no-ext-diff", "--no-textconv", f"--unified={CONTEXT}", f"{base}...HEAD")
     pieces = chunks(diff)
     try:
         with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
