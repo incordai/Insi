@@ -129,8 +129,10 @@ def main():
     for number in numbers:
         try:
             review(number, post, force)
-        except SystemExit as err:
-            print(f"PR #{number}: {err}", file=sys.stderr)
+        # SystemExit comes from run(); anything else (a missing insi binary or
+        # report, bad JSON from gh) must also not stop the remaining PRs.
+        except (SystemExit, Exception) as err:
+            print(f"PR #{number}: {type(err).__name__}: {err}", file=sys.stderr)
             failed = 1
     return failed
 
