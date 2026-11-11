@@ -108,15 +108,12 @@ for bounded sanitizer runs. Production `unwrap`, `expect` and explicit panics
 are Clippy warnings, denied in CI. Test fixtures have a documented test-only
 exception so setup failures remain clear.
 
-The coverage job emits LCOV and nextest JUnit reports and preserves both as
-workflow artifacts even when tests fail. `codecov.yml` tracks each crate;
-core/loop targets are 95%/93%, set below their initial local line-coverage
-measurements (97.0%/95.5% over 141 passing tests). Confirm these targets against
-the first Linux CI baseline. Other crates use their measured baseline.
-To activate Codecov reporting, install/authorize the Codecov GitHub App for this
-repository and set repository variable `CODECOV_ENABLED=true`. Uploads use
-GitHub OIDC, so no long-lived `CODECOV_TOKEN` secret is required. Keep uploads
-disabled until the account is connected; report generation still runs.
+The coverage job (`coverage` in `.github/workflows/ci.yml`) emits LCOV, an HTML
+report and nextest JUnit results, writes a coverage summary to the job summary,
+and preserves the reports as the `coverage-and-junit` workflow artifact even
+when tests fail. The repository has no `codecov.yml` and does not upload to
+Codecov, so no per-crate coverage target is enforced; read the summary and
+artifact to see coverage for a change.
 
 Releases are cut by maintainers; see [RELEASING.md](RELEASING.md).
 

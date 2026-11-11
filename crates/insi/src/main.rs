@@ -38,8 +38,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod audit_bridge;
+mod benchmark;
 mod context;
 mod doctor;
+mod experiment;
 mod harness_pr;
 mod hook;
 mod improve;
@@ -47,6 +50,12 @@ mod init;
 mod issue;
 mod learn;
 mod mcp;
+mod onboard;
+mod review;
+mod review_evidence;
+mod review_quality;
+mod suggest;
+mod suggest_memory;
 
 use insi_core::{Config, Task, Worker};
 use insi_eval::mine::{self, Options};
@@ -76,6 +85,24 @@ const USAGE: &str = "usage:
   insi learn    --tasks <dir> --private <dir> [--lessons <file>] [--worker \"<cmd {prompt}>\"] [--to-memory]
                 [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
   insi report   [--results <file>]
+  insi experiment --plan <file>       (assess recorded component experiments; no worker runs)
+  insi onboard [--repo <dir>] --output <new-dir> [--verify]
+  insi review --plan <trusted-json> --output <new-dir> [--repo <dir>]
+                (--base <commit> | --pr N) [--with-memory] [--publish]
+  insi review-publish --repo <dir> --pr N --report <report.json>
+  insi review-feedback --report <json> --finding <id> --verdict <value> [--note <text>]
+  insi review-quality --plan <corpus.json>
+  insi benchmark --detect [--repo <dir>] (suggest project commands; executes nothing)
+  insi benchmark --plan <json> --repo <baseline> [--candidate <dir>] --output <new-dir>
+  insi suggest  [--repo <dir>] [--suggestion <json>] [--worker \"<cmd {prompt}>\"]
+                [--proposer \"<cmd {prompt}>\"] [--samples N] [--margin F] [--local] [--to-memory]
+                [--benchmarks <suite-json>] (additional required project workloads)
+                [--audit-finding <id>] (delegate edits to Incord's approved candidate executor)
+                (suggest a code improvement, freeze its benchmark, compare isolated checkouts;
+                open a draft PR only for a measured gain with passing regression checks)
+  insi improve --code [same options as suggest]
+  insi suggest --retry-memory <run-dir>  (deliver a saved decision only; no worker or PR)
+  insi suggest --retry-audit <run-dir>   (deliver a saved audit outcome only)
   insi brief    --tasks <dir> --private <dir> [--only id,id] [--half older|newer]
                 (the interface each task's worker is told: what its hidden tests import
                 that the base lacks)
@@ -180,6 +207,162 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err(USAGE.to_string());
     };
     let flags = Flags::parse(rest)?;
+    if command == "review-publish" {
+        let repo =
+            std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                flags
+                    .get("report")
+                    .ok_or("review-publish requires --report")?,
+            )
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let pr = flags.number("pr", 0)?;
+        if pr == 0 {
+            return Err("review-publish requires --pr".into());
+        }
+        for field in ["base", "head"] {
+            let sha = report[field].as_str().ok_or("missing report revision")?;
+            if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("invalid report revision".into());
+            }
+            insi_eval::git::git(&repo, &["fetch", "--quiet", "origin", sha])?;
+        }
+        println!("{}", review::publish(&repo, pr, &report)?);
+        return Ok(());
+    }
+    if command == "onboard" {
+        let repo =
+            std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
+        return onboard::run(
+            &repo,
+            Path::new(
+                flags
+                    .get("output")
+                    .ok_or("onboard requires --output <new-dir>")?,
+            ),
+            flags.has("verify"),
+        );
+    }
+    if command == "review-quality" {
+        let report = review_quality::assess(Path::new(
+            flags
+                .get("plan")
+                .ok_or("review-quality requires --plan <json>")?,
+        ))?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    if command == "review-feedback" {
+        let report = review_quality::feedback(
+            Path::new(flags.get("report").ok_or("feedback requires --report")?),
+            flags.get("finding").ok_or("feedback requires --finding")?,
+            flags.get("verdict").ok_or("feedback requires --verdict")?,
+            flags.get("note").unwrap_or(""),
+        )?;
+        if report["stored"] != true {
+            return Err("feedback was not acknowledged by memory".into());
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    if command == "review" {
+        let repo =
+            std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
+        let pr = flags
+            .get("pr")
+            .map(|n| n.parse::<u64>().map_err(|e| e.to_string()))
+            .transpose()?;
+        return review::run(
+            &repo,
+            Path::new(
+                flags
+                    .get("plan")
+                    .ok_or("review requires --plan <trusted-json>")?,
+            ),
+            Path::new(
+                flags
+                    .get("output")
+                    .ok_or("review requires --output <new-dir>")?,
+            ),
+            flags.get("base"),
+            pr,
+            flags.has("publish"),
+            flags.has("with-memory"),
+        );
+    }
+    if command == "benchmark" {
+        let repo =
+            std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
+        if flags.has("detect") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&benchmark::detect(&repo))
+                    .map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        let plan = benchmark::read(Path::new(
+            flags
+                .get("plan")
+                .ok_or("benchmark requires --plan <json> or --detect")?,
+        ))?;
+        let logs = PathBuf::from(
+            flags
+                .get("output")
+                .ok_or("benchmark requires a fresh --output <directory> for evidence")?,
+        );
+        std::fs::create_dir(&logs)
+            .map_err(|e| format!("benchmark output must be a new directory: {e}"))?;
+        let config = Config::load(&repo)?;
+        std::fs::write(
+            logs.join("plan.json"),
+            serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let result = if let Some(candidate) = flags.get("candidate") {
+            let candidate = std::fs::canonicalize(candidate).map_err(|e| e.to_string())?;
+            if candidate == repo {
+                return Err("baseline and candidate must be different directories".into());
+            }
+            benchmark::compare(&plan, &repo, &candidate, &config, &logs)
+        } else {
+            benchmark::baseline(&plan, &repo, &config, &logs)
+                .map(|v| serde_json::json!({"status":"baseline-only","workloads":v}))
+        };
+        let report = match &result {
+            Ok(v) => v.clone(),
+            Err(e) => serde_json::json!({"status":"failed","reason":e}),
+        };
+        std::fs::write(
+            logs.join("report.json"),
+            serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let report = result?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+        if report["qualified"] == false {
+            return Err("benchmark suite did not qualify; see report.json".into());
+        }
+        return Ok(());
+    }
+    if command == "experiment" {
+        let plan = flags
+            .get("plan")
+            .ok_or("experiment requires --plan <file>")?;
+        return experiment::run(Path::new(plan));
+    }
     if command == "doctor" {
         let repo = flags
             .get("repo")
@@ -223,7 +406,9 @@ fn command_by_name(
         "validate" => validate_cmd(flags, work, results),
         "eval" => eval_cmd(flags, work, results),
         "learn" => learn_cmd(flags, work, results),
+        "improve" if flags.has("code") => suggest_cmd(flags, work),
         "improve" => improve_cmd(flags, work, results),
+        "suggest" => suggest_cmd(flags, work),
         "mcp" => {
             // stdout is the protocol from here on: nothing else may print.
             let lessons = lessons_file(flags, work);
@@ -460,6 +645,70 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
     }
     println!(
         "\nnext, from this folder:\n  insi mine\n  insi validate --jobs 2\n  insi eval --fair-only"
+    );
+    Ok(())
+}
+
+fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
+    if let Some(dir) = flags.get("retry-audit") {
+        let dir = Path::new(dir);
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("report.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        audit_bridge::report(insi_memory::incord::address()?, dir, &report)?;
+        println!("audit outcome recorded; no execution rerun");
+        return Ok(());
+    }
+    if let Some(dir) = flags.get("retry-memory") {
+        suggest_memory::retry(insi_memory::incord::address()?, Path::new(dir))?;
+        println!("memory decision stored");
+        return Ok(());
+    }
+    let repo =
+        std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
+    let config = Config::load(&repo)?;
+    let worker = if flags.has("worker") {
+        Worker::command(flags.argv("worker"))
+    } else {
+        config.worker()
+    };
+    let proposer = if flags.has("proposer") {
+        Worker::command(flags.argv("proposer"))
+    } else {
+        config.proposer.clone().unwrap_or_else(|| worker.clone())
+    };
+    let margin = flags
+        .get("margin")
+        .unwrap_or("0.05")
+        .parse::<f64>()
+        .map_err(|e| e.to_string())?;
+    let memory = if flags.has("to-memory") {
+        Some(insi_memory::incord::address()?)
+    } else {
+        None
+    };
+    let options = suggest::Options {
+        repo: &repo,
+        work: &work.root,
+        config: &config,
+        worker: &worker,
+        proposer: &proposer,
+        suggestion: flags.get("suggestion").map(Path::new),
+        samples: flags.number("samples", 10)?,
+        margin,
+        local: flags.has("local"),
+        benchmarks: flags.get("benchmarks").map(Path::new),
+        audit_finding: flags.get("audit-finding"),
+    };
+    let outcome = if memory.is_some() {
+        suggest::run_with_memory(&options, &issue::GhCli, memory)
+    } else {
+        suggest::run(&options, &issue::GhCli)
+    }?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&outcome).map_err(|e| e.to_string())?
     );
     Ok(())
 }

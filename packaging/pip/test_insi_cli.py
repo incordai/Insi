@@ -3,6 +3,7 @@
 Run: python test_insi_cli.py   (standard library only)
 """
 
+import errno
 import hashlib
 import io
 import os
@@ -158,6 +159,73 @@ assert p.read_bytes() == b'complete-binary' * 10000
         self.assertEqual(list(cache.rglob(insi_cli.binary_name())), [])
         path = insi_cli.ensure(self.env, {self.name: digest})
         self.assertEqual(path.read_bytes(), b"complete binary")
+
+    # A filesystem that cannot hard-link (EPERM from os.link) must still end
+    # with a complete executable binary and no staging file, not an error.
+    @unittest.skipIf(os.name == "nt", "Windows publishes with rename, not a link")
+    def test_filesystem_without_hard_links_still_installs_the_binary(self):
+        payload = b"complete binary"
+        digest = self.put({insi_cli.binary_name(): payload})
+        with mock.patch.object(insi_cli.os, "link", side_effect=OSError(errno.EPERM, "no hard links")):
+            path = insi_cli.ensure(self.env, {self.name: digest})
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertTrue(os.access(path, os.X_OK), "installed binary is executable")
+        self.assertEqual(list(path.parent.glob("*.part")), [])
+
+    # If another process publishes the binary after the link attempt fails,
+    # the fallback must leave that winner exactly as it is.
+    @unittest.skipIf(os.name == "nt", "Windows publishes with rename, not a link")
+    def test_no_hard_link_fallback_never_overwrites_an_existing_binary(self):
+        payload = b"complete binary"
+        digest = self.put({insi_cli.binary_name(): payload})
+        winner_bytes = b"the winner, already running"
+
+        def lose_the_race(staged, binary):
+            Path(binary).write_bytes(winner_bytes)
+            os.chmod(binary, 0o755)
+            raise OSError(errno.EPERM, "no hard links")
+
+        with mock.patch.object(insi_cli.os, "link", side_effect=lose_the_race):
+            path = insi_cli.ensure(self.env, {self.name: digest})
+        self.assertEqual(path.read_bytes(), winner_bytes)
+        self.assertEqual(list(path.parent.glob("*.part")), [])
+
+    # In the fallback the binary must appear only by renaming a staged file
+    # that is already complete and executable, so a reader can never see a
+    # part-written one. Before the fix the destination was created first and
+    # written into afterwards.
+    @unittest.skipIf(os.name == "nt", "Windows publishes with rename, not a link")
+    def test_no_hard_link_fallback_publishes_only_a_complete_executable_file(self):
+        payload = b"complete binary"
+        digest = self.put({insi_cli.binary_name(): payload})
+        real_replace = os.replace
+        seen = []
+
+        def check_then_replace(staged, binary):
+            seen.append(
+                (Path(staged).read_bytes(), os.access(staged, os.X_OK), Path(binary).exists())
+            )
+            real_replace(staged, binary)
+
+        with mock.patch.object(insi_cli.os, "link", side_effect=OSError(errno.EPERM, "no hard links")), \
+                mock.patch.object(insi_cli.os, "replace", side_effect=check_then_replace):
+            path = insi_cli.ensure(self.env, {self.name: digest})
+        self.assertEqual(seen, [(payload, True, False)])
+        self.assertEqual(path.read_bytes(), payload)
+
+    # A rename that fails in the fallback must leave no binary and no staging
+    # file, and a retry works.
+    @unittest.skipIf(os.name == "nt", "Windows publishes with rename, not a link")
+    def test_no_hard_link_fallback_failure_leaves_nothing_behind(self):
+        digest = self.put({insi_cli.binary_name(): b"complete binary"})
+        with mock.patch.object(insi_cli.os, "link", side_effect=OSError(errno.EPERM, "no hard links")), \
+                mock.patch.object(insi_cli.os, "replace", side_effect=OSError(errno.ENOSPC, "disk full")):
+            with self.assertRaises(OSError):
+                insi_cli.ensure(self.env, {self.name: digest})
+        cache = Path(self.env["INSI_CACHE_DIR"])
+        self.assertEqual(list(cache.rglob("*.part")), [])
+        self.assertEqual(list(cache.rglob(insi_cli.binary_name())), [])
+        self.assertEqual(insi_cli.ensure(self.env, {self.name: digest}).read_bytes(), b"complete binary")
 
     def test_archive_links_and_extra_members_are_refused(self):
         for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):

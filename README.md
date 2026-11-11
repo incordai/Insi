@@ -41,6 +41,10 @@ not learned from, measured against a control.
 [![CI](https://github.com/incordai/Insi/actions/workflows/ci.yml/badge.svg)](https://github.com/incordai/Insi/actions/workflows/ci.yml)
 [Testing and outstanding work](docs/TESTING-AUDIT.md)
 
+[PR review, evidence and onboarding](docs/REVIEW.md) ·
+[Incord candidate execution](docs/INCORD-CANDIDATE-API.md) ·
+[Review research and next priorities](docs/REVIEW-RESEARCH.md)
+
 ## How it works
 
 ```text
@@ -528,6 +532,18 @@ rule with no paths and no commands, or a topic with an empty part, is
 refused when the config is read.
 
 ## The improvement loop: `insi improve`
+
+To suggest improvements to **working application code**, run
+`insi improve --code` (or `insi suggest`). It creates a benchmark, measures
+the baseline, implements in isolated clones, and opens a draft PR only for
+a measured gain with passing regressions. Use `--local` to keep qualifying
+results local. See [code improvement suggestions](docs/SUGGESTIONS.md).
+
+For controlled component comparisons on recorded runs, use
+`insi experiment --plan experiment.json`. It checks matched tasks and seeds,
+repository separation, stable controls and declared provenance, and reports
+failure evidence, reliability and statistical support without running a worker.
+See [experiment assessment](docs/EXPERIMENTS.md) for the plan format and limits.
 
 The harness is a folder of prompts and settings a worker runs with; its
 `prompt.md` is put before every task's prompt. `insi improve --harness <dir>`

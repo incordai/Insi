@@ -471,14 +471,38 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let dir = std::env::temp_dir()
-            .join(format!("insi-init-{}-{nanos}", std::process::id()))
-            .join("shop");
-        std::fs::create_dir_all(&dir).expect("dir");
+        repo_with_at(files, nanos)
+    }
+
+    fn repo_with_at(files: &[(&str, &str)], nanos: u128) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.incord/temp");
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        let parent = scratch.join(format!(
+            "insi-init-{}-{nanos}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        // Never reuse an existing fixture, even if the clock repeats.
+        std::fs::create_dir(&parent).expect("unique fixture");
+        let dir = parent.join("shop");
+        std::fs::create_dir(&dir).expect("dir");
         for (name, text) in files {
             std::fs::write(dir.join(name), text).expect("write");
         }
         dir
+    }
+
+    #[test]
+    fn fixtures_with_the_same_timestamp_cannot_share_files() {
+        let rust = repo_with_at(&[("Cargo.toml", "[package]\nname='fixture'\n")], 42);
+        let unknown = repo_with_at(&[("notes.txt", "")], 42);
+        assert_ne!(rust, unknown);
+        assert!(!unknown.join("Cargo.toml").exists());
+        assert!(init(&unknown, vec![], None, false, ALL)
+            .expect_err("unknown fixture must stay unknown")
+            .contains("--check"));
     }
 
     #[test]

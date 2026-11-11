@@ -7,6 +7,7 @@ by the release workflow), and only the one expected file is taken out of it,
 without extracting archive paths to disk.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -73,6 +74,30 @@ def read_archive(base, name):
     return (Path(base) / name).read_bytes()
 
 
+# The error numbers a filesystem gives when it cannot make hard links (some
+# network mounts, FAT/exFAT, certain container overlays). Only these send
+# publication to the exclusive-create path below; any other failure (disk
+# full, I/O error, missing folder) is a real failure and is raised.
+_NO_HARD_LINKS = frozenset(
+    {errno.EPERM, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+
+
+# Publish an already complete, executable `staged` file at `binary` on a
+# filesystem that cannot hard-link. It refuses an existing destination (a
+# winner another process may be running is never touched) and then renames the
+# staged file into place in one step, so a reader sees either no file or the
+# whole binary. The earlier version created the destination first and wrote
+# into it, which let a second installer see a part-written, non-executable
+# file. Two installers racing past the check both rename identical verified
+# bytes; the loser's rename swaps in an equal file and a process already
+# running the first keeps its own copy. Callers: ensure.
+def _publish_without_links(staged, binary):
+    if os.path.lexists(binary):
+        raise FileExistsError(errno.EEXIST, "binary already published", str(binary))
+    os.replace(staged, binary)
+
+
 def ensure(env=os.environ, checksums=None):
     """The path of this platform's binary, fetched and checked if needed."""
     tgt = target()
@@ -123,7 +148,18 @@ def ensure(env=os.environ, checksums=None):
                 if os.name == "nt":
                     os.rename(staged, binary)
                 else:
-                    os.link(staged, binary)
+                    # A filesystem without hard links cannot take the link;
+                    # fall back to renaming the complete staged file into
+                    # place, still refusing an existing binary. Other errors
+                    # are raised.
+                    try:
+                        os.link(staged, binary)
+                    except FileExistsError:
+                        raise
+                    except OSError as e:
+                        if e.errno not in _NO_HARD_LINKS:
+                            raise
+                        _publish_without_links(staged, binary)
             except FileExistsError:
                 if not binary.is_file():
                     raise

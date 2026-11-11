@@ -57,7 +57,7 @@ pub struct NewPr {
 pub struct GhCli;
 
 impl GhCli {
-    fn gh(repo: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+    pub(crate) fn gh(repo: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
         use std::io::Write;
         let mut child = std::process::Command::new("gh")
             .args(args)

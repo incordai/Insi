@@ -1,0 +1,82 @@
+name: Insi PR review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: number
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: insi-review-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+jobs:
+  review:
+    if: vars.INSI_AUTO_REVIEW == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+      INSI_REVIEW_IMAGE: ${{ vars.INSI_REVIEW_IMAGE }}
+    steps:
+      # Build only trusted base code. Never run the PR's workflow/configuration.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Validate configured execution image
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]]
+          [[ "$INSI_REVIEW_IMAGE" == *@sha256:* ]]
+          docker pull "$INSI_REVIEW_IMAGE"
+      - run: cargo build -p insi --locked
+      - run: gh auth setup-git
+      - name: Review exact PR head in isolated execution
+        run: |
+          mkdir -p .incord/temp
+          target/debug/insi review --repo . --pr "$PR" --plan .insi/review.json --output .incord/temp/pr-review
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: insi-review-report
+          path: .incord/temp/pr-review/report.json
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    needs: review
+    if: >-
+      always() && needs.review.result != 'skipped' && needs.review.result != 'cancelled' &&
+      (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+      INSI_REVIEW_AUTHOR: github-actions[bot]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - run: cargo build -p insi --locked
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: insi-review-report
+          path: review-evidence
+      - run: gh auth setup-git
+      # No PR code or review tool is executed in this write-token job.
+      - run: target/debug/insi review-publish --repo . --pr "$PR" --report review-evidence/report.json
