@@ -425,11 +425,31 @@ fn clean_text(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Whether ANY line of `text` holds a credential or personal data.
+/// `secrets::scan_diff` only looks at lines that start with `+`, so a multi-line
+/// text must have every line marked as added, not just the first. The marker is
+/// `"+ "` (not `"+"`): a text line starting `++ ` would otherwise read as a
+/// `+++ ` file header and be skipped.
+/// Called by: `public_report` and `review_payload` in this file.
+/// Calls: `insi_core::secrets::scan_diff`. Sibling: `harness_pr.rs` scans a
+/// whole diff with the same function.
+fn leaks_secret(text: &str) -> bool {
+    // Mark EVERY line as added so scan_diff inspects all of them. The old code
+    // prefixed only the start of the text with "+", so a token on line 2 or
+    // later was never scanned and could be posted to the PR.
+    let marked = text
+        .lines()
+        .map(|line| format!("+ {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    !insi_core::secrets::scan_diff(&marked).is_empty()
+}
+
 fn public_report(value: &mut Value) -> bool {
     let mut withheld = false;
     match value {
         Value::String(text) => {
-            if !insi_core::secrets::scan_diff(&format!("+{text}")).is_empty() {
+            if leaks_secret(text) {
                 *text = "[withheld sensitive text]".into();
                 withheld = true;
             }
@@ -510,7 +530,7 @@ pub fn review_payload(repo: &Path, report: &Value) -> Result<Value, String> {
             clean_text(&f.message),
             f.sources.join(", ")
         );
-        if !insi_core::secrets::scan_diff(&format!("+{body}")).is_empty() {
+        if leaks_secret(&body) {
             summary.push("A finding was withheld by the sensitive-data scan.".into());
             continue;
         }
@@ -713,6 +733,23 @@ pub fn run(
     if post && pr.is_none() {
         return Err("--publish requires --pr".into());
     }
+    // For a local review, turn `--base` into a commit SHA in the owner's own
+    // repo, where a local-only branch or bare `main` exists. The fresh clone
+    // below holds only `origin/*` refs and cannot resolve those names; the SHA
+    // is the same everywhere. A PR review takes its base from GitHub instead.
+    let local_base = match (pr, base) {
+        (Some(_), _) => None,
+        (None, None) => return Err("local review requires --base <commit>".into()),
+        (None, Some(name)) => {
+            if name.starts_with('-') {
+                return Err("--base must be a commit or branch, not an option".into());
+            }
+            Some(git(
+                repo,
+                &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
+            )?)
+        }
+    };
     std::fs::create_dir(output).map_err(|e| format!("review output must be new: {e}"))?;
     let output = std::fs::canonicalize(output).map_err(|e| e.to_string())?;
     let checkout = output.join("checkout");
@@ -756,8 +793,7 @@ pub fn run(
         git(&checkout, &["fetch", "--quiet", "origin", &base])?;
         base
     } else {
-        base.ok_or("local review requires --base <commit>")?
-            .to_string()
+        local_base.ok_or("local review requires --base <commit>")?
     };
     std::fs::write(
         output.join("plan.json"),
@@ -955,6 +991,23 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn a_secret_on_any_line_of_a_multi_line_text_is_withheld() {
+        let token = format!("gho_{}", "aB3dE5gH7j".repeat(3));
+        // Regression test: a token on a later line must be caught, and a
+        // "++ " line must not be mistaken for a diff file header.
+        assert!(leaks_secret(&token), "single line");
+        assert!(
+            leaks_secret(&format!("first line is clean\nsecond line {token}")),
+            "token on line 2 must be found"
+        );
+        assert!(
+            leaks_secret(&format!("clean\n++ {token}")),
+            "a line starting '++ ' must not be read as a file header"
+        );
+        assert!(!leaks_secret("ordinary text\nacross two lines"));
+    }
+
+    #[test]
     fn sarif_eslint_and_absolute_paths_share_the_same_schema() {
         let repo = std::env::current_dir().unwrap();
         let mut eslint = json!([{"filePath":repo.join("src/a.rs"),"messages":[{"line":2,"ruleId":"r","message":"bad","severity":2}]}]);
@@ -1005,5 +1058,41 @@ mod tests {
         assert_eq!(report["tools"][0]["status"], "unavailable");
         assert_eq!(report["checks"][0]["passed"], false);
         std::fs::remove_dir_all(d).unwrap();
+    }
+    // Shows a local `--base main` is resolved in the owner's repo, where the
+    // branch exists, not in the fresh clone (which has only `origin/main` and
+    // the checked-out `feature`); calls `run` end to end, no memory or PR.
+    #[cfg(unix)]
+    #[test]
+    fn a_local_base_branch_name_is_resolved_in_the_original_repo() {
+        let d = scratch();
+        let out = scratch();
+        git(&d, &["init", "--quiet"]).unwrap();
+        git(&d, &["config", "user.name", "Test"]).unwrap();
+        git(&d, &["config", "user.email", "test@localhost"]).unwrap();
+        std::fs::write(d.join("one"), "1").unwrap();
+        git(&d, &["add", "one"]).unwrap();
+        git(&d, &["commit", "--quiet", "-m", "first"]).unwrap();
+        git(&d, &["branch", "-M", "main"]).unwrap();
+        let base = git(&d, &["rev-parse", "HEAD"]).unwrap();
+        git(&d, &["checkout", "--quiet", "-b", "feature"]).unwrap();
+        std::fs::write(d.join("two"), "2").unwrap();
+        git(&d, &["add", "two"]).unwrap();
+        git(&d, &["commit", "--quiet", "-m", "second"]).unwrap();
+        let plan_path = out.join("plan.json");
+        std::fs::write(
+            &plan_path,
+            json!({"version":1,"full_checks":[["sh","-c","exit 0"]]}).to_string(),
+        )
+        .unwrap();
+        let review = out.join("review");
+        let outcome = run(&d, &plan_path, &review, Some("main"), None, false, false);
+        assert_eq!(outcome, Ok(()));
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(review.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["base"], base);
+        assert_eq!(report["changed_files"], json!(["two"]));
+        std::fs::remove_dir_all(d).unwrap();
+        std::fs::remove_dir_all(out).unwrap();
     }
 }

@@ -7,6 +7,7 @@ by the release workflow), and only the one expected file is taken out of it,
 without extracting archive paths to disk.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -73,6 +74,36 @@ def read_archive(base, name):
     return (Path(base) / name).read_bytes()
 
 
+# The error numbers a filesystem gives when it cannot make hard links (some
+# network mounts, FAT/exFAT, certain container overlays). Only these send
+# publication to the exclusive-create path below; any other failure (disk
+# full, I/O error, missing folder) is a real failure and is raised.
+_NO_HARD_LINKS = frozenset(
+    {errno.EPERM, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+
+
+# Publish `payload` at `path` on a filesystem that cannot hard-link, still
+# refusing to overwrite: O_CREAT|O_EXCL fails with FileExistsError if the
+# destination exists, so a winner another process may be running is never
+# touched. The file is created without execute permission and made
+# executable only after every byte is written, and it is removed if anything
+# fails, so a half-written file is never left looking like a finished binary.
+def _create_exclusive(path, payload):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        try:
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
+        os.chmod(path, 0o755)
+    except BaseException:
+        Path(path).unlink(missing_ok=True)
+        raise
+
+
 def ensure(env=os.environ, checksums=None):
     """The path of this platform's binary, fetched and checked if needed."""
     tgt = target()
@@ -123,7 +154,17 @@ def ensure(env=os.environ, checksums=None):
                 if os.name == "nt":
                     os.rename(staged, binary)
                 else:
-                    os.link(staged, binary)
+                    # A filesystem without hard links cannot take the link;
+                    # fall back to an exclusive create, which refuses to
+                    # overwrite in the same way. Other errors are raised.
+                    try:
+                        os.link(staged, binary)
+                    except FileExistsError:
+                        raise
+                    except OSError as e:
+                        if e.errno not in _NO_HARD_LINKS:
+                            raise
+                        _create_exclusive(binary, payload)
             except FileExistsError:
                 if not binary.is_file():
                     raise

@@ -175,10 +175,16 @@ fn work(
         )?
         .stdout
     };
-    ensure_clean(&baseline, original)?;
+    // Harness bookkeeping files (task file, agent state) may be left behind by
+    // the proposer or worker; everything else untracked is a modification.
+    let own = own_pathspecs(o);
+    ensure_clean(&baseline, original, &own)?;
     let mut suggestion = parse(&raw)?;
-    if let Some(generated) = &suggestion.suite {
+    if let Some(generated) = suggestion.suite.as_mut() {
         crate::benchmark::validate(generated)?;
+        // The proposer must not set the bar its own change has to clear: only
+        // an operator-supplied --benchmarks suite keeps its own thresholds.
+        bound_generated_suite(generated, o.margin)?;
         if suite.is_none() {
             suite = Some(generated.clone());
         }
@@ -188,7 +194,7 @@ fn work(
         if !plan.workloads.iter().any(|w| w.primary) {
             return Err("code improvement suites need a numeric primary target; use benchmark for diagnostic-only suites".into());
         }
-        if suggestion.files.contains_key(&suite_path) {
+        if collides_with(&suggestion.files, &suite_path) {
             return Err("generated suite plan path is reserved".into());
         }
         suggestion.files.insert(
@@ -227,7 +233,7 @@ fn work(
                 1800,
             )?;
         }
-        ensure_clean(tree, &frozen_head)?;
+        ensure_clean(tree, &frozen_head, &own)?;
     }
     let baseline_head = git(&baseline, &["rev-parse", "HEAD"])?;
     let candidate_base = git(&candidate, &["rev-parse", "HEAD"])?;
@@ -240,13 +246,13 @@ fn work(
         1800,
     )?;
     frozen(&baseline, &suggestion)?;
-    ensure_clean(&baseline, &baseline_head)?;
+    ensure_clean(&baseline, &baseline_head, &own)?;
     // Establish that the benchmark runs before any implementation is requested.
     if let Some(plan) = &suite {
         let initial = crate::benchmark::baseline(plan, &baseline, o.config, dir)?;
         save(&dir.join("suite-initial.json"), &initial)?;
         frozen(&baseline, &suggestion)?;
-        ensure_clean(&baseline, &baseline_head)?;
+        ensure_clean(&baseline, &baseline_head, &own)?;
     }
     let initial = measure(o, &baseline, &suggestion, dir, "baseline-initial")?;
     save(
@@ -332,15 +338,15 @@ fn work(
         "candidate-regressions",
         1800,
     )?;
-    ensure_clean(&candidate, &candidate_head)?;
+    ensure_clean(&candidate, &candidate_head, &own)?;
     let mut suite_evidence = None;
     if let Some(plan) = &suite {
         let evidence = crate::benchmark::compare(plan, &baseline, &candidate, o.config, dir)?;
         save(&dir.join("suite-report.json"), &evidence)?;
         frozen(&baseline, &suggestion)?;
         frozen(&candidate, &suggestion)?;
-        ensure_clean(&baseline, &baseline_head)?;
-        ensure_clean(&candidate, &candidate_head)?;
+        ensure_clean(&baseline, &baseline_head, &own)?;
+        ensure_clean(&candidate, &candidate_head, &own)?;
         if evidence["qualified"] != true {
             return Ok(kept(dir, "project benchmark suite did not qualify"));
         }
@@ -369,8 +375,8 @@ fn work(
         )?;
         frozen(&baseline, &suggestion)?;
         frozen(&candidate, &suggestion)?;
-        ensure_clean(&baseline, &baseline_head)?;
-        ensure_clean(&candidate, &candidate_head)?;
+        ensure_clean(&baseline, &baseline_head, &own)?;
+        ensure_clean(&candidate, &candidate_head, &own)?;
     }
     let evidence = compare(before, after, suggestion.direction, o.margin);
     save(&dir.join("benchmark.json"), &evidence)?;
@@ -513,15 +519,97 @@ fn execute(
     Ok(out)
 }
 
-fn ensure_clean(tree: &Path, head: &str) -> Result<(), String> {
+/// Git pathspecs naming the files the harness writes for itself (the task
+/// file and each agent's own state), built from the worker's and proposer's
+/// `own_files`. Called by `work`; the result is passed to `ensure_clean` so
+/// these files do not count as a modification of the measured tree.
+fn own_pathspecs(o: &Options) -> Vec<String> {
+    let mut specs = vec![":(exclude).insi-task.md".to_string()];
+    specs.extend(
+        o.worker
+            .own_files
+            .iter()
+            .chain(&o.proposer.own_files)
+            .map(|p| format!(":(glob,exclude){p}")),
+    );
+    specs
+}
+
+/// Fails unless the tree is still at `head` with no tracked change and no
+/// untracked file (apart from the harness files `own` excludes). Untracked
+/// files matter because discovery, setup and measurement could otherwise leave
+/// files in one tree only and make the baseline and candidate asymmetric.
+/// Called by `work` after every step that runs untrusted commands; calls `git`.
+fn ensure_clean(tree: &Path, head: &str, own: &[String]) -> Result<(), String> {
+    let mut status = vec!["status", "--porcelain", "--untracked-files=all", "--", "."];
+    status.extend(own.iter().map(String::as_str));
     if git(tree, &["rev-parse", "HEAD"])? != head
         || git(tree, &["diff", "HEAD", "--quiet"]).is_err()
+        || !git(tree, &status)?.is_empty()
     {
         return Err(
-            "measurement or discovery modified tracked source/history; nothing published".into(),
+            "measurement or discovery modified tracked source, left untracked files, or changed history; nothing published".into(),
         );
     }
     Ok(())
+}
+
+/// Reduces a benchmark path to the form the file system would treat as the
+/// same file: only its normal components (so `.`, empty parts and doubled
+/// slashes vanish), lower-cased (macOS and Windows ignore case), joined by `/`.
+/// Called by `parse` (reserved evidence file) and `collides_with` (suite path).
+fn folded(path: &str) -> String {
+    Path::new(path)
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(part) => Some(part.to_string_lossy().to_lowercase()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// True when any frozen benchmark file would land on the same file as `target`
+/// once normalised and case-folded. Called by `work` to protect the suite plan
+/// path; uses `folded`.
+fn collides_with(files: &BTreeMap<String, String>, target: &str) -> bool {
+    let target = folded(target);
+    files.keys().any(|path| folded(path) == target)
+}
+
+/// Makes a proposer-generated suite subject to the operator's bar instead of
+/// its own: every primary needs at least the CLI `margin` of gain and every
+/// guardrail may lose at most `margin`. Stricter values the proposer asked
+/// for are kept. Called by `work` for generated suites only (an operator's
+/// `--benchmarks` suite keeps its thresholds); re-validates the result.
+fn bound_generated_suite(plan: &mut crate::benchmark::Plan, margin: f64) -> Result<(), String> {
+    for w in &mut plan.workloads {
+        w.min_gain = w.min_gain.max(margin);
+        w.max_regression = w.max_regression.min(margin);
+    }
+    crate::benchmark::validate(plan)
+}
+
+/// One-sided exact sign-test tail: the probability of at least `wins`
+/// successes among `wins + losses` fair coin flips (ties already removed).
+/// Computed with log-probabilities so large counts do not underflow. Called
+/// by `compare` here and by `assess` in experiment.rs; returns 1.0 unless wins
+/// outnumber losses.
+pub(crate) fn sign_tail(wins: usize, losses: usize) -> f64 {
+    let n = wins + losses;
+    if wins <= losses {
+        return 1.0;
+    }
+    let log_choose = (1..=losses)
+        .map(|i| ((n + 1 - i) as f64).ln() - (i as f64).ln())
+        .sum::<f64>();
+    let mut term = (log_choose - n as f64 * std::f64::consts::LN_2).exp();
+    let mut sum = term;
+    for k in wins..n {
+        term *= (n - k) as f64 / (k + 1) as f64;
+        sum += term;
+    }
+    sum.min(1.0)
 }
 
 fn parse(raw: &str) -> Result<Suggestion, String> {
@@ -550,7 +638,7 @@ fn parse(raw: &str) -> Result<Suggestion, String> {
     }
     for path in s.files.keys() {
         if !path.starts_with(".insi-bench/")
-            || path == ".insi-bench/evidence.json"
+            || folded(path) == ".insi-bench/evidence.json"
             || path.contains('\\')
             || Path::new(path)
                 .components()
@@ -666,19 +754,7 @@ pub(crate) fn compare(
     let mean = differences.iter().sum::<f64>() / differences.len() as f64;
     let wins = differences.iter().filter(|v| **v > 0.0).count();
     let losses = differences.iter().filter(|v| **v < 0.0).count();
-    let n = wins + losses;
-    let mut probability = 1.0;
-    if wins > losses {
-        let log_choose = (1..=losses)
-            .map(|i| ((n + 1 - i) as f64).ln() - (i as f64).ln())
-            .sum::<f64>();
-        let mut term = (log_choose - n as f64 * std::f64::consts::LN_2).exp();
-        probability = term;
-        for k in wins..n {
-            term *= (n - k) as f64 / (k + 1) as f64;
-            probability += term;
-        }
-    }
+    let probability = sign_tail(wins, losses);
     let mut state = 0x9e3779b97f4a7c15u64;
     let mut means: Vec<f64> = (0..2000)
         .map(|_| {
@@ -754,6 +830,112 @@ mod tests {
         let mut p = proposal();
         p["benchmark"] = json!([]);
         assert!(parse(&p.to_string()).is_err());
+    }
+
+    // The reserved evidence file must be refused however its path is spelled:
+    // extra `.` parts, doubled slashes and different letter case all name the
+    // same file on common file systems.
+    #[test]
+    fn reserved_paths_are_compared_normalised_and_case_folded() {
+        for path in [
+            ".insi-bench/./evidence.json",
+            ".insi-bench//evidence.json",
+            ".insi-bench/Evidence.json",
+            ".INSI-bench/EVIDENCE.JSON",
+        ] {
+            let mut p = proposal();
+            p["benchmark"] = json!(["sh", path]);
+            p["files"] = json!({path:"test"});
+            assert!(parse(&p.to_string()).is_err(), "{path}");
+        }
+        let files: BTreeMap<String, String> = [(
+            ".insi-bench/./Branch-Suite.json".to_string(),
+            "{}".to_string(),
+        )]
+        .into();
+        assert!(collides_with(&files, ".insi-bench/branch-suite.json"));
+        assert!(!collides_with(&files, ".insi-bench/other-suite.json"));
+    }
+
+    // Builds a throwaway git repository with one committed file and returns
+    // its folder and HEAD, for tests of the clean-tree check.
+    fn scratch_repo() -> (std::path::PathBuf, String) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let tree = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.incord/temp")
+            .join(format!(
+                "clean-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&tree).unwrap();
+        git(&tree, &["init", "--quiet", "-b", "main"]).unwrap();
+        git(&tree, &["config", "user.name", "Test"]).unwrap();
+        git(&tree, &["config", "user.email", "test@localhost"]).unwrap();
+        std::fs::write(tree.join("code.txt"), "slow\n").unwrap();
+        git(&tree, &["add", "."]).unwrap();
+        git(&tree, &["commit", "--quiet", "-m", "base"]).unwrap();
+        let head = git(&tree, &["rev-parse", "HEAD"]).unwrap();
+        (tree, head)
+    }
+
+    // A file created after the baseline commit is untracked, which `git diff
+    // HEAD` cannot see; the clean check must still refuse it, while the
+    // harness's own bookkeeping files stay tolerated.
+    #[test]
+    fn an_untracked_file_written_after_the_baseline_fails_the_clean_check() {
+        let (tree, head) = scratch_repo();
+        ensure_clean(&tree, &head, &[]).unwrap();
+        std::fs::write(tree.join("stray.txt"), "left by a setup step").unwrap();
+        assert!(ensure_clean(&tree, &head, &[]).is_err());
+        std::fs::remove_file(tree.join("stray.txt")).unwrap();
+        std::fs::write(tree.join(".insi-task.md"), "prompt").unwrap();
+        let own = vec![":(exclude).insi-task.md".to_string()];
+        ensure_clean(&tree, &head, &own).unwrap();
+        std::fs::write(tree.join("code.txt"), "changed\n").unwrap();
+        assert!(ensure_clean(&tree, &head, &own).is_err());
+        std::fs::remove_dir_all(tree).unwrap();
+    }
+
+    // A proposer-generated suite may not choose its own bar: a zero gain and a
+    // 99% allowed regression are raised and capped to the operator's margin,
+    // while a stricter request from the proposer is kept.
+    #[test]
+    fn a_generated_suite_cannot_set_its_own_thresholds() {
+        let workload = |id: &str, primary: bool, gain: f64, regression: f64| {
+            json!({"id":id,"category":"latency","kind":"json","command":["true"],
+                "verify":["true"],"unit":"milliseconds","direction":"lower",
+                "primary":primary,"min_gain":gain,"max_regression":regression})
+        };
+        let mut plan: crate::benchmark::Plan = serde_json::from_value(json!({
+            "version":1,"samples":5,"workloads":[
+                workload("target", true, 0.0, 0.0),
+                workload("loose", false, 0.0, 0.99),
+                workload("strict", false, 0.0, 0.01)]}))
+        .unwrap();
+        bound_generated_suite(&mut plan, 0.05).unwrap();
+        assert_eq!(plan.workloads[0].min_gain, 0.05);
+        assert_eq!(plan.workloads[1].max_regression, 0.05);
+        assert_eq!(plan.workloads[2].max_regression, 0.01);
+    }
+
+    // `compare` and the experiment assessment share one sign-test tail, so
+    // the p-value `compare` reports must equal `sign_tail` of its win/loss
+    // counts, including the no-evidence case.
+    #[test]
+    fn compare_reports_the_shared_sign_test_tail() {
+        let five = compare(vec![100.0; 5], vec![80.0; 5], Direction::Lower, 0.05);
+        assert_eq!(five.sign_test_p, sign_tail(5, 0));
+        assert!((sign_tail(5, 0) - 0.03125).abs() < 1e-12);
+        let mixed = compare(
+            vec![100.0; 5],
+            vec![80.0, 80.0, 80.0, 80.0, 120.0],
+            Direction::Lower,
+            0.0,
+        );
+        assert_eq!(mixed.sign_test_p, sign_tail(4, 1));
+        let none = compare(vec![100.0; 5], vec![100.0; 5], Direction::Lower, 0.0);
+        assert_eq!(none.sign_test_p, 1.0);
     }
 
     #[cfg(unix)]
@@ -1085,6 +1267,25 @@ mod tests {
             });
             assert_eq!(result["status"], "draft-pr");
             assert_eq!(count, 1);
+        }
+
+        // A proposer-written suite whose guardrail tolerates a 99% regression
+        // (and whose primary asks for no gain) must not let a 50% guardrail
+        // regression through: the operator's margin bounds the thresholds.
+        #[test]
+        fn a_generated_guardrail_cannot_allow_its_own_regression() {
+            let (result, count) = fixture("echo fast > code.txt", |p| {
+                p["suite"] = json!({"version":1,"samples":5,"workloads":[
+                    {"id":"generated","category":"latency","kind":"json",
+                    "command":["sh","-c","if [ \"$(cat code.txt)\" = fast ]; then echo '{\"value\":70}'; else echo '{\"value\":100}'; fi"],
+                    "verify":["sh","-c","test -f code.txt"],"unit":"milliseconds","direction":"lower","primary":true,"min_gain":0.0},
+                    {"id":"memory","category":"memory","kind":"json",
+                    "command":["sh","-c","if [ \"$(cat code.txt)\" = fast ]; then echo '{\"value\":150}'; else echo '{\"value\":100}'; fi"],
+                    "verify":["sh","-c","test -f code.txt"],"unit":"bytes","direction":"lower","max_regression":0.99}]});
+            });
+            assert_eq!(result["status"], "kept", "{result}");
+            assert!(result["reason"].as_str().unwrap().contains("suite"));
+            assert_eq!(count, 0);
         }
 
         #[test]

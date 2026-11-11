@@ -67,6 +67,9 @@ pub fn implement(
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    // The approval wait has its own deadline; the execute call gets a
+    // separate full budget below once approval is granted, so a slow human
+    // decision cannot starve the engine's long-running edit.
     let deadline = Instant::now() + Duration::from_secs(seconds.min(3600));
     loop {
         let status = http(addr, "POST", &endpoint(id, "/candidate/status")?, &request)?;
@@ -91,10 +94,7 @@ pub fn implement(
         "POST",
         &endpoint(id, "/candidate/execute")?,
         &request,
-        deadline
-            .saturating_duration_since(Instant::now())
-            .as_secs()
-            .clamp(1, 3600),
+        seconds,
     )?;
     std::fs::write(
         dir.join("engine-execution.json"),
@@ -125,14 +125,24 @@ pub fn report(addr: SocketAddr, dir: &Path, outcome: &Value) -> Result<(), Strin
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+    // A fake engine that answers each call at once, in order; callers:
+    // the denial test. Wraps `engine_paced` with no delay.
     fn engine(replies: Vec<Value>) -> (SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+        engine_paced(replies.into_iter().map(|r| (Duration::ZERO, r)).collect())
+    }
+    // A fake engine that answers each call in order after the given pause, so
+    // a test can make approval or execution take real time; callers: `engine`
+    // and the execute-budget test.
+    fn engine_paced(
+        replies: Vec<(Duration, Value)>,
+    ) -> (SocketAddr, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let thread = std::thread::spawn(move || {
             let mut calls = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(10);
-            for reply in replies {
+            for (pause, reply) in replies {
                 let mut socket = loop {
                     match listener.accept() {
                         Ok((s, _)) => break s,
@@ -167,6 +177,7 @@ mod tests {
                         }
                     }
                 }
+                std::thread::sleep(pause);
                 let body = reply.to_string();
                 write!(
                     socket,
@@ -211,6 +222,50 @@ mod tests {
         assert!(calls[0].starts_with("POST /v1/memory/audit/findings/finding-1/candidate/prepare"));
         assert!(!calls.iter().any(|c| c.contains("/execute")));
         assert!(dir.join("engine-candidate.json").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    // Shows execution gets its own budget after a slow approval: with a 2s
+    // budget, approval takes about 1.5s and the engine then needs 1.5s to
+    // execute. Sharing one deadline would leave execution about 1s and cut
+    // the read short while the engine keeps editing; callers: test runner.
+    #[test]
+    fn execution_gets_a_full_budget_after_a_slow_approval() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.incord/temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join(format!(
+            "bridge-budget-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let candidate = dir.join("candidate");
+        let none = Duration::ZERO;
+        let (addr, thread) = engine_paced(vec![
+            (none, json!({"token":"approval-token"})),
+            (none, json!({"status":"pending"})),
+            (none, json!({"status":"pending"})),
+            (none, json!({"status":"pending"})),
+            (none, json!({"status":"approved"})),
+            (
+                Duration::from_millis(1500),
+                json!({"status":"tested","candidate":candidate,"baseline":"base"}),
+            ),
+        ]);
+        let outcome = implement(
+            Engine { addr, seconds: 2 },
+            "finding-1",
+            &json!({"updated_at":1}),
+            &dir,
+            &candidate,
+            "base",
+            &dir,
+        );
+        assert_eq!(outcome, Ok(()));
+        let calls = thread.join().unwrap();
+        assert!(calls.last().unwrap().contains("/candidate/execute"));
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

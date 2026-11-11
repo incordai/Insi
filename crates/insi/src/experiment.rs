@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use insi_core::EvalResult;
 use insi_eval::store::read_results;
 use insi_loop::accept;
+// The one shared one-sided sign-test tail (also used by `suggest::compare`).
+use crate::suggest::sign_tail;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -352,25 +354,6 @@ fn metrics(run: &Run, rows: &[EvalResult]) -> Value {
 
 fn ratio(a: usize, b: usize) -> Option<f64> {
     (b > 0).then(|| a as f64 / b as f64)
-}
-
-/// P[X >= wins], X~Binomial(wins+losses, 0.5), computed without factorials.
-fn sign_tail(wins: usize, losses: usize) -> f64 {
-    let n = wins + losses;
-    if wins <= losses {
-        return 1.0;
-    }
-    // Log probabilities avoid underflow in the starting binomial coefficient.
-    let log_choose = (1..=losses)
-        .map(|i| ((n + 1 - i) as f64).ln() - (i as f64).ln())
-        .sum::<f64>();
-    let mut term = (log_choose - n as f64 * std::f64::consts::LN_2).exp();
-    let mut sum = term;
-    for k in wins..n {
-        term *= (n - k) as f64 / (k + 1) as f64;
-        sum += term;
-    }
-    sum.min(1.0)
 }
 
 #[cfg(test)]
