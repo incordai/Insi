@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Component, Path},
+    // PathBuf: the sandbox mount point returned by `sandbox_mount`.
+    path::{Component, Path, PathBuf},
     time::Duration,
 };
 
@@ -330,15 +331,22 @@ pub fn collect(
         repo,
         &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
     )?;
-    let changed = git(repo, &["diff", "--name-only", "-z", &base, &head])?
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    // `base...head` diffs from the merge-base, as GitHub shows a PR. The
+    // two-dot `base head` also listed files changed only on the base branch
+    // after the PR branched, which widened the impact selection.
+    let changed = git(
+        repo,
+        &["diff", "--name-only", "-z", &format!("{base}...{head}")],
+    )?
+    .split('\0')
+    .filter(|s| !s.is_empty())
+    .map(str::to_string)
+    .collect::<Vec<_>>();
     for path in &changed {
         safe_path(path)?;
     }
     let selected = impact(plan, &changed, &base);
+    let mount = sandbox_mount(config);
     let mut tools = Vec::new();
     let mut findings: BTreeMap<String, Finding> = BTreeMap::new();
     let mut complete = true;
@@ -360,7 +368,7 @@ pub fn collect(
                     let parsed = serde_json::from_str::<Value>(&out.stdout)
                         .map_err(|e| e.to_string())
                         .and_then(|mut v| {
-                            relative_paths(&mut v, repo)?;
+                            relative_paths(&mut v, repo, mount.as_deref())?;
                             normalize(&tool.format, &v, &tool.name)
                         });
                     match parsed {
@@ -472,7 +480,25 @@ fn public_report(value: &mut Value) -> bool {
     withheld
 }
 
-fn relative_paths(value: &mut Value, repo: &Path) -> Result<(), String> {
+/// Where the sandbox mounts the reviewed checkout: the `X` of a `{tree}:X`
+/// (or `{tree}:X:ro`) argument in its command, e.g. `/work` for the
+/// `INSI_REVIEW_IMAGE` sandbox. A tool inside it reports absolute paths
+/// under `X`, never under the host checkout path. Called by `collect`.
+fn sandbox_mount(config: &Config) -> Option<PathBuf> {
+    config.sandbox.as_ref()?.command.iter().find_map(|arg| {
+        let inside = arg.strip_prefix("{tree}:")?;
+        let mount = inside.split(':').next()?;
+        Path::new(mount).is_absolute().then(|| PathBuf::from(mount))
+    })
+}
+
+/// Rewrites absolute finding paths (`filePath`, `file`, `uri`) to
+/// checkout-relative ones. A path may sit under the host checkout or, for a
+/// sandboxed tool, under the sandbox's mount point; before, only the host
+/// path was accepted, so every sandboxed tool that reports absolute paths
+/// (ESLint always does) was marked invalid-output. Anything else, or a path
+/// that climbs out with `..`, is refused. Called by `collect`.
+fn relative_paths(value: &mut Value, repo: &Path, mount: Option<&Path>) -> Result<(), String> {
     match value {
         Value::Object(fields) => {
             for (key, v) in fields {
@@ -481,21 +507,28 @@ fn relative_paths(value: &mut Value, repo: &Path) -> Result<(), String> {
                         let raw = raw.strip_prefix("file://").unwrap_or(raw);
                         let path = Path::new(raw);
                         if path.is_absolute() {
-                            *v = json!(path
+                            let inside = path
                                 .strip_prefix(repo)
-                                .map_err(|_| "tool finding points outside reviewed checkout")?
+                                .ok()
+                                .or_else(|| mount.and_then(|m| path.strip_prefix(m).ok()))
+                                .filter(|p| {
+                                    !p.components()
+                                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                                })
+                                .ok_or("tool finding points outside reviewed checkout")?;
+                            *v = json!(inside
                                 .to_str()
                                 .ok_or("non-UTF8 finding path")?
                                 .replace('\\', "/"));
                         }
                     }
                 }
-                relative_paths(v, repo)?;
+                relative_paths(v, repo, mount)?;
             }
         }
         Value::Array(items) => {
             for v in items {
-                relative_paths(v, repo)?;
+                relative_paths(v, repo, mount)?;
             }
         }
         _ => {}
@@ -537,6 +570,10 @@ pub fn review_payload(repo: &Path, report: &Value) -> Result<Value, String> {
             summary.push("A finding was withheld by the sensitive-data scan.".into());
             continue;
         }
+        // Anchor against the merge-base (`base...head`), the diff GitHub
+        // accepts comments on. With two dots, lines that only looked added
+        // because head lacks newer base commits became inline comments, and
+        // GitHub rejected the whole review with a 422.
         let diff = git(
             repo,
             &[
@@ -544,8 +581,7 @@ pub fn review_payload(repo: &Path, report: &Value) -> Result<Value, String> {
                 "--no-ext-diff",
                 "--no-textconv",
                 "--unified=0",
-                base,
-                head,
+                &format!("{base}...{head}"),
                 "--",
                 &f.file,
             ],
@@ -806,7 +842,14 @@ pub fn run(
     let memory_impact = if with_memory {
         let diff = git(
             &checkout,
-            &["diff", "--no-ext-diff", "--no-textconv", &base, "HEAD"],
+            // Merge-base diff, as for the changed files: only the PR's own
+            // change goes to the impact lookup.
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                &format!("{base}...HEAD"),
+            ],
         )?;
         if diff.len() > 1024 * 1024 {
             json!({"status":"unavailable","reason":"diff exceeds bounded context limit"})
@@ -836,6 +879,16 @@ pub fn run(
         report["memory_impact"] = memory_impact;
         if !plan.reproductions.is_empty() {
             let baseline = output.join("baseline");
+            // A clone copies only branches and HEAD. The base commit sits in
+            // the checkout under FETCH_HEAD (a PR) or a remote-tracking ref (a
+            // local review); when it is not an ancestor of head the baseline
+            // clone lacked it and `checkout <base>` failed. A branch on it
+            // makes the clone carry it.
+            let base = report["base"].as_str().ok_or("missing base")?.to_string();
+            git(
+                &checkout,
+                &["update-ref", "refs/heads/insi-review-base", &base],
+            )?;
             git(
                 &output,
                 &[
@@ -846,7 +899,6 @@ pub fn run(
                     baseline.to_str().ok_or("non-UTF8 baseline")?,
                 ],
             )?;
-            let base = report["base"].as_str().ok_or("missing base")?.to_string();
             git(&baseline, &["checkout", "--quiet", "--detach", &base])?;
             let evidence = crate::review_evidence::run(
                 &plan.reproductions,
@@ -1014,11 +1066,41 @@ mod tests {
     fn sarif_eslint_and_absolute_paths_share_the_same_schema() {
         let repo = std::env::current_dir().unwrap();
         let mut eslint = json!([{"filePath":repo.join("src/a.rs"),"messages":[{"line":2,"ruleId":"r","message":"bad","severity":2}]}]);
-        relative_paths(&mut eslint, &repo).unwrap();
+        relative_paths(&mut eslint, &repo, None).unwrap();
         let e = normalize("eslint", &eslint, "eslint").unwrap();
         assert_eq!(e[0].file, "src/a.rs");
         let sarif = json!({"runs":[{"results":[{"ruleId":"r","message":{"text":"bad"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/a.rs"},"region":{"startLine":2}}}]}]}]});
         assert_eq!(normalize("sarif", &sarif, "scan").unwrap()[0].id, e[0].id);
+    }
+    // A tool inside the INSI_REVIEW_IMAGE sandbox sees the checkout at /work
+    // and reports /work/... paths; they map back to checkout paths, while a
+    // path outside the mount or climbing out with `..` is still refused.
+    // Before, every such path was refused and the tool marked invalid-output.
+    #[test]
+    fn sandboxed_tool_paths_under_the_mount_are_made_relative() {
+        let mut config = Config::default();
+        config.sandbox = Some(insi_core::config::Sandbox {
+            command: vec![
+                "docker".into(),
+                "run".into(),
+                "-v".into(),
+                "{tree}:/work:ro".into(),
+                "img".into(),
+            ],
+        });
+        let mount = sandbox_mount(&config);
+        assert_eq!(mount.as_deref(), Some(Path::new("/work")));
+        let repo = Path::new("/host/checkout");
+        let mut eslint = json!([{"filePath":"/work/src/a.rs"},{"uri":"file:///work/b.rs"}]);
+        relative_paths(&mut eslint, repo, mount.as_deref()).unwrap();
+        assert_eq!(eslint, json!([{"filePath":"src/a.rs"},{"uri":"b.rs"}]));
+        for outside in ["/etc/passwd", "/work/../etc/passwd"] {
+            let mut v = json!({"filePath": outside});
+            assert!(
+                relative_paths(&mut v, repo, mount.as_deref()).is_err(),
+                "{outside}"
+            );
+        }
     }
     #[test]
     fn inline_anchors_handle_deletions_and_increment_operators() {
@@ -1124,6 +1206,53 @@ mod tests {
         std::fs::write(
             &plan_path,
             json!({"version":1,"full_checks":[["sh","-c","exit 0"]]}).to_string(),
+        )
+        .unwrap();
+        let review = out.join("review");
+        let outcome = run(&d, &plan_path, &review, Some("main"), None, false, false);
+        assert_eq!(outcome, Ok(()));
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(review.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["base"], base);
+        assert_eq!(report["changed_files"], json!(["two"]));
+        std::fs::remove_dir_all(d).unwrap();
+        std::fs::remove_dir_all(out).unwrap();
+    }
+    // The base branch moved on after the feature branched. Changed files
+    // must be the feature's own (merge-base diff), not also the newer base
+    // file; and the reproduction baseline must check out a base commit that
+    // is not an ancestor of head. Before, the two-dot diff listed `three`
+    // too, and the baseline clone lacked the base commit so `run` failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_base_that_moved_on_is_diffed_from_the_merge_base_and_reproducible() {
+        let d = scratch();
+        let out = scratch();
+        git(&d, &["init", "--quiet"]).unwrap();
+        git(&d, &["config", "user.name", "Test"]).unwrap();
+        git(&d, &["config", "user.email", "test@localhost"]).unwrap();
+        std::fs::write(d.join("one"), "1").unwrap();
+        git(&d, &["add", "one"]).unwrap();
+        git(&d, &["commit", "--quiet", "-m", "first"]).unwrap();
+        git(&d, &["branch", "-M", "main"]).unwrap();
+        git(&d, &["checkout", "--quiet", "-b", "feature"]).unwrap();
+        std::fs::write(d.join("two"), "2").unwrap();
+        git(&d, &["add", "two"]).unwrap();
+        git(&d, &["commit", "--quiet", "-m", "second"]).unwrap();
+        git(&d, &["checkout", "--quiet", "main"]).unwrap();
+        std::fs::write(d.join("three"), "3").unwrap();
+        git(&d, &["add", "three"]).unwrap();
+        git(&d, &["commit", "--quiet", "-m", "base moved on"]).unwrap();
+        let base = git(&d, &["rev-parse", "HEAD"]).unwrap();
+        git(&d, &["checkout", "--quiet", "feature"]).unwrap();
+        let plan_path = out.join("plan.json");
+        std::fs::write(
+            &plan_path,
+            json!({"version":1,"full_checks":[["sh","-c","exit 0"]],
+                "reproductions":[{"id":"r","file":"two","line":1,"rule":"r","message":"m",
+                    "command":["sh",".insi-review/r.sh"],"files":{".insi-review/r.sh":"exit 0\n"},
+                    "assertion_marker":"ASSERT_R","failure_exit":1}]})
+            .to_string(),
         )
         .unwrap();
         let review = out.join("review");

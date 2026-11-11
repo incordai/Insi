@@ -141,12 +141,15 @@ def main():
     # Three dots diff against the merge-base, as GitHub does. Two dots from the
     # base branch's current tip also showed the reverse of every newer base
     # commit, so the model reviewed changes the PR never made.
-    diff = git("diff", "--no-ext-diff", "--no-textconv", f"--unified={CONTEXT}", f"{base}...HEAD")
+    # The git call and the model calls share one handler: a failing git (bad
+    # base) or a missing `claude` binary (OSError) used to escape it with a
+    # traceback and exit 1 instead of the documented exit 2.
     try:
+        diff = git("diff", "--no-ext-diff", "--no-textconv", f"--unified={CONTEXT}", f"{base}...HEAD")
         pieces = chunks(diff)
         with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
             found = [f for part in pool.map(ask, pieces) for f in part]
-    except (RuntimeError, ValueError, subprocess.TimeoutExpired) as err:
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as err:
         sys.stderr.write(f"{err}\n")
         return 2
     rows, seen = [], set()

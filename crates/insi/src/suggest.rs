@@ -1,10 +1,14 @@
 //! Suggest, benchmark, then propose code changes. The operator's tree is read only.
+// RefCell and PathBuf hold the guarded clones' trusted .git contents; the
+// shared git helper is no longer imported because this module's own `git`
+// wraps it with that check.
+use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use insi_core::{Config, Worker};
-use insi_eval::{git::git, process};
+use insi_eval::process;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -164,6 +168,9 @@ fn work(
         for (key, value) in [("user.name", "Insi"), ("user.email", "insi@localhost")] {
             git(tree, &["config", key, value])?;
         }
+        // From here on a proposer, worker or measured command may write into
+        // this clone, so every later git call checks its .git first.
+        guard_clone(tree)?;
     }
     let raw = if let Some(file) = o.suggestion {
         std::fs::read_to_string(file).map_err(|e| e.to_string())?
@@ -289,13 +296,31 @@ fn work(
         )?;
     }
     frozen(&candidate, &suggestion)?;
-    if git(
+    // New files count too: `diff HEAD` sees only tracked ones, so a worker
+    // could add a module next to the frozen benchmark (found first when the
+    // benchmark imports it) and `add --all` below would commit it. Ignored
+    // files are listed as well, since the worker can edit `.gitignore`. The
+    // status call runs first so a changed `.git` reports as itself, not as a
+    // benchmark change.
+    let added = git(
         &candidate,
-        &["diff", "HEAD", "--quiet", "--", ".insi-bench"],
-    )
-    .is_err()
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignored",
+            "--",
+            ".insi-bench",
+        ],
+    )?;
+    if !added.is_empty()
+        || git(
+            &candidate,
+            &["diff", "HEAD", "--quiet", "--", ".insi-bench"],
+        )
+        .is_err()
     {
-        return Err("worker changed an existing benchmark; nothing published".into());
+        return Err("worker changed or added benchmark files; nothing published".into());
     }
     if git(&candidate, &["rev-parse", "HEAD"])? != candidate_base {
         return Err("worker changed git history; nothing published".into());
@@ -458,13 +483,17 @@ fn work(
             "remote PR base differs from the measured commit; update the source branch and rerun",
         ));
     }
-    git(&candidate, &["remote", "set-url", "origin", &remote])?;
+    // Push to the operator's own origin URL given on the command line, not to
+    // the clone's `origin`: `remote set-url` changed only `remote.origin.url`
+    // and left any `pushurl` in place, and it would now also trip the .git
+    // guard. `--no-verify` skips a pre-push hook as a second line of defence.
     git(
         &candidate,
         &[
             "push",
             "--quiet",
-            "origin",
+            "--no-verify",
+            &remote,
             &format!("HEAD:refs/heads/{branch}"),
         ],
     )?;
@@ -521,6 +550,99 @@ fn execute(
         ));
     }
     Ok(out)
+}
+
+/// Paths under `.git` that Insi's own git commands rewrite (commits, branch
+/// switches, index refreshes), left out of [`git_files`]. Everything else
+/// (config, hooks, info/exclude, info/attributes, objects/info/alternates)
+/// can make a later git command run a program or hide or inject content.
+const GIT_VOLATILE: [&str; 8] = [
+    "refs",
+    "logs",
+    "index",
+    "HEAD",
+    "ORIG_HEAD",
+    "FETCH_HEAD",
+    "COMMIT_EDITMSG",
+    "packed-refs",
+];
+
+/// The behaviour-relevant contents of `tree/.git`: every file except the
+/// volatile ones and the object store (whose `info/` folder is kept), keyed
+/// by path, with symlinks recorded by target. Refuses a `.git` that is not a
+/// real directory (a gitdir file or link could point at another repository).
+/// Called by `guard_clone` and `git`.
+fn git_files(tree: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let root = tree.join(".git");
+    if !std::fs::symlink_metadata(&root).is_ok_and(|m| m.is_dir()) {
+        return Err(format!("{} is not a real .git directory", tree.display()));
+    }
+    let mut files = BTreeMap::new();
+    let mut pending = vec![root.clone()];
+    while let Some(folder) = pending.pop() {
+        for entry in std::fs::read_dir(&folder).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            let rel = path
+                .strip_prefix(&root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let top = rel.split('/').next().unwrap_or_default();
+            if GIT_VOLATILE.contains(&top)
+                || (top == "objects" && rel != "objects" && !rel.starts_with("objects/info"))
+            {
+                continue;
+            }
+            let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() {
+                let target = std::fs::read_link(&path).map_err(|e| e.to_string())?;
+                files.insert(rel, format!("link:{}", target.display()).into_bytes());
+            } else if meta.is_dir() {
+                files.insert(format!("{rel}/"), Vec::new());
+                pending.push(path);
+            } else {
+                files.insert(rel, std::fs::read(&path).map_err(|e| e.to_string())?);
+            }
+        }
+    }
+    Ok(files)
+}
+
+thread_local! {
+    /// For each clone a proposer, worker or measured command can write to,
+    /// its `.git` contents as Insi left them after setting it up.
+    static GUARDED: RefCell<BTreeMap<PathBuf, BTreeMap<String, Vec<u8>>>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+/// Records `tree`'s `.git` as trusted; from now on every [`git`] call in it
+/// first checks that nothing changed there. Called by `work` right after each
+/// clone is configured, before any untrusted command runs in it.
+fn guard_clone(tree: &Path) -> Result<(), String> {
+    let files = git_files(tree)?;
+    GUARDED.with(|g| g.borrow_mut().insert(tree.to_path_buf(), files));
+    Ok(())
+}
+
+/// Runs git in `dir`. In a guarded clone it first refuses when the `.git`
+/// config, hooks or info files changed since `guard_clone`: a worker or a
+/// measured command could have planted a hook (`pre-commit` runs on Insi's
+/// commit), `core.fsmonitor` (runs on status/diff), a filter, a
+/// `remote.origin.pushurl` or an `info/exclude` that hides files, and Insi
+/// runs these commands outside any sandbox with the operator's credentials.
+/// Every git call in this module goes through here.
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let changed = GUARDED.with(|g| match g.borrow().get(dir) {
+        Some(trusted) => git_files(dir).map(|now| now != *trusted),
+        None => Ok(false),
+    })?;
+    if changed {
+        return Err(
+            "a proposer, worker or measured command changed the clone's .git (config, hooks or info); nothing published"
+                .into(),
+        );
+    }
+    insi_eval::git::git(dir, args)
 }
 
 /// Git pathspecs naming the files the harness writes for itself (the task
@@ -1218,6 +1340,39 @@ mod tests {
             assert_eq!(v["status"], "failed");
             assert!(v["reason"].as_str().unwrap().contains("frozen"));
             assert_eq!(n, 0);
+        }
+
+        // A worker that plants a git hook or a push URL in its clone must not
+        // get Insi to run the hook on its commit or push elsewhere: before the
+        // .git guard the hook ran on Insi's commit and the draft was opened.
+        #[test]
+        fn a_worker_cannot_plant_git_hooks_or_push_urls() {
+            for script in [
+                "printf '#!/bin/sh\\nexit 0\\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit; echo fast > code.txt",
+                "git config remote.origin.pushurl /nonexistent/elsewhere.git; echo fast > code.txt",
+                "echo '[core]' >> .git/info/exclude; echo fast > code.txt",
+            ] {
+                let (v, n) = fixture(script, |_| {});
+                assert_eq!(v["status"], "failed", "{script}: {v}");
+                assert!(v["reason"].as_str().unwrap().contains(".git"), "{script}: {v}");
+                assert_eq!(n, 0, "{script}");
+            }
+        }
+
+        // New files next to the frozen benchmark, even ones the worker hides
+        // with `.gitignore`, block publication; before, `diff HEAD` missed
+        // them and `add --all` committed the visible one into the draft.
+        #[test]
+        fn a_worker_cannot_add_files_next_to_the_benchmark() {
+            for script in [
+                "echo fast > code.txt; echo x > .insi-bench/helper.sh",
+                "echo fast > code.txt; echo .insi-bench/helper.sh >> .gitignore; echo x > .insi-bench/helper.sh",
+            ] {
+                let (v, n) = fixture(script, |_| {});
+                assert_eq!(v["status"], "failed", "{script}: {v}");
+                assert!(v["reason"].as_str().unwrap().contains("benchmark files"), "{script}: {v}");
+                assert_eq!(n, 0, "{script}");
+            }
         }
         #[test]
         fn invalid_benchmark_results_never_publish() {

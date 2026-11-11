@@ -56,6 +56,20 @@ class Ask(unittest.TestCase):
                 adapter.ask("diff")
 
 
+class Exit(unittest.TestCase):
+    # A bad base (git fails) and a missing `claude` (OSError) both end in the
+    # documented exit 2, not a traceback with exit 1.
+    def test_git_or_launch_failures_exit_2(self):
+        with mock.patch.object(sys, "argv", ["x", "no-such-base-ref"]), \
+                mock.patch.object(sys, "stderr"):
+            self.assertEqual(adapter.main(), 2)
+        with mock.patch.object(adapter, "git", return_value="diff --git a/f b/f\n+x\n"), \
+                mock.patch.object(adapter.subprocess, "run", side_effect=FileNotFoundError("claude")), \
+                mock.patch.object(sys, "argv", ["x", "main"]), \
+                mock.patch.object(sys, "stderr"):
+            self.assertEqual(adapter.main(), 2)
+
+
 class Chunks(unittest.TestCase):
     # Every file lands in some piece, and no piece breaks the size limit.
     def test_a_large_diff_is_split_by_file_without_losing_any(self):
