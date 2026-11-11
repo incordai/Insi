@@ -1,3 +1,8 @@
+## Index
+
+- checks: commands Incord Memory runs after edits
+- Operation: how the runner behaves and what it needs
+
 # Insi local checks
 
 ## checks
