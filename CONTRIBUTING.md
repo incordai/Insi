@@ -23,6 +23,12 @@ for reproducible bugs and scoped changes; report vulnerabilities privately.
 
 ## Building and checking
 
+The fastest start is the dev container: open the repository in a
+[Codespace](https://codespaces.new/incordai/Insi) or in VS Code with "Reopen in
+Container". `.devcontainer/` installs Rust with rustfmt and clippy, the 1.89.0
+toolchain, Python, Node and the GitHub CLI, sets a git identity if none is set,
+and fetches the dependencies, so the commands below run without further setup.
+
 You need Rust 1.89 or newer and git. CI runs these three commands on Windows,
 macOS and Linux, and a pull request is merged only when all three pass:
 
