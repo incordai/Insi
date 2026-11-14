@@ -219,7 +219,7 @@ pub fn ci_workflow(kind: Stack, setup: &[String], test_cmd: &[String]) -> Option
 
 /// `arg` as one POSIX shell word: bare when it holds only characters the
 /// shell leaves alone, otherwise single-quoted.
-fn shell_quoted(arg: &str) -> String {
+pub(super) fn shell_quoted(arg: &str) -> String {
     let bare = !arg.is_empty()
         && arg
             .chars()
@@ -411,6 +411,8 @@ pub fn init_with_worker(
     )
     .map_err(|e| format!("{}: {e}", config_path.display()))?;
     let gitignore_changed = ignore_work_folder(repo)?;
+    // Inmem owns scheduling; generate its shared watch starter without replacing owner checks.
+    crate::watch_templates::install(repo, &config.test_cmd)?;
     let mcp = if writes.mcp {
         Some(register(
             &repo.join(MCP_FILE),

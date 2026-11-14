@@ -1,0 +1,99 @@
+# BEGIN INSI WATCH MODULE
+# INSI CHECK CATALOG v1
+# Only this segment belongs to Insi; preserve all Inmem/agent modules outside it.
+# This is an agent-maintained Inmem watch file, not a claim every scanner is enabled.
+# Active [[check]] entries run on Inmem's scheduler. Commented entries are templates.
+# Agents: read the existing file first; preserve user checks, names, schedules and edits.
+# Select checks for the actual stack, install/verify prerequisites, run each command once,
+# then append/uncomment only the applicable checks. Give checks stable unique names.
+# Record incomplete/missing tooling as a gap; never use `|| true` to hide failures.
+# Use project-specific paths, roles, routes, fixtures and expected behavior.
+# Keep credentials out of this file. Use environment variables/local secret storage.
+# Do not schedule workers, fixes, installs, commits, pushes or PR publication as checks.
+# Avoid scheduling both a complete suite and its individual tests redundantly.
+# Inmem reads .incord/watch.toml; Insi does not start a second scheduler.
+
+# --- Rust correctness / concurrency ---
+# [[check]]
+# name = "insi: rust strict lint"
+# command = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+# every_minutes = 1440
+# timeout_secs = 600
+# paths = ["Cargo.toml", "Cargo.lock", "src", "crates"]
+
+# --- Go / PHP / Python / JavaScript / TypeScript / Java / .NET / C/C++ ---
+# Copy the applicable command into a [[check]] using the complete examples below:
+# Go: go test -race ./...
+# PHP: vendor/bin/phpunit
+# Python: python3 -m pytest
+# JavaScript/TypeScript: npm test
+# Java: mvn test
+# .NET: dotnet test
+# C/C++: ctest --test-dir build --output-on-failure
+# Native memory: valgrind --error-exitcode=1 --leak-check=full ./build/test-program
+# Rust unsafe code: cargo +nightly miri test (requires a configured Miri toolchain)
+
+# --- Secrets: verify Gitleaks is installed; redact findings ---
+# [[check]]
+# name = "insi: security secrets"
+# command = "gitleaks dir --redact --exit-code 1 ."
+# every_minutes = 1440
+# timeout_secs = 300
+# paths = ["src", "config", "package.json", "Cargo.toml"]
+
+# --- Source analysis: freeze required rules outside untrusted PR control ---
+# [[check]]
+# name = "insi: security source rules"
+# command = "semgrep scan --metrics=off --error --config .insi/security-rules.yml ."
+# every_minutes = 1440
+# timeout_secs = 600
+# paths = ["src", ".insi/security-rules.yml"]
+
+# --- Rust dependencies: prepare a current advisory database before enabling ---
+# [[check]]
+# name = "insi: security rust dependencies"
+# command = "cargo audit --no-fetch"
+# every_minutes = 1440
+# timeout_secs = 300
+# paths = ["Cargo.toml", "Cargo.lock"]
+
+# --- Other ecosystems: select installed tools matching lockfiles ---
+# npm audit --audit-level=high
+# composer audit --locked
+# govulncheck ./...
+# python3 -m pip_audit
+# dotnet list package --vulnerable --include-transitive (requires an assertion wrapper;
+# listing findings alone may exit zero and must not be treated as a passing check).
+
+# --- Filesystem / container / infrastructure configuration ---
+# [[check]]
+# name = "insi: security dependencies and configuration"
+# command = "trivy fs --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --exit-code 1 ."
+# every_minutes = 1440
+# timeout_secs = 600
+# paths = ["Dockerfile", "compose.yaml", "infra", "Cargo.lock", "package-lock.json"]
+
+# --- Application contracts: create this script for the app before enabling ---
+# [[check]]
+# name = "insi: security application boundaries"
+# command = "python3 scripts/security/check_application.py"
+# every_minutes = 1440
+# timeout_secs = 300
+# paths = ["src", "tests/security", "scripts/security/check_application.py"]
+# The script must assert real authentication/expiry/revocation, API object/method
+# ownership, CSRF/origins, SSRF direct/redirect/private-canary behavior, uploads,
+# TLS validation and business-logic replay/concurrency against disposable targets.
+# Include unsafe positive and fixed/ordinary negative controls, bounded requests,
+# private reports and cleanup. Reference fixtures are shipped in the Insi source;
+# these fixture scripts are not automatically copied into an unrelated app.
+
+# --- Network / browser / memory extensions ---
+# Nmap: explicit lab target and ports only; open ports are observations, not exploits.
+# sqlmap/Metasploit: disposable targets only; normalize evidence and failure exits.
+# Browser: assert a real DOM/canary effect and its blocked fixed control.
+# Managed memory: compare retained allocations/listeners/goroutines after cleanup.
+# Native memory: ASan/LSan instrumented binaries with expected diagnostic + exit.
+# Java: application-specific heap/growth tests; profiler availability is not coverage.
+# Health: project HTTP/storage/disk checks must use real local configuration and
+# must fail if the target is unavailable rather than claiming a clean result.
+# END INSI WATCH MODULE

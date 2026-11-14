@@ -91,6 +91,7 @@ dependencies = [
  "insi-memory",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

@@ -57,6 +57,7 @@ mod review_quality;
 mod review_security;
 mod suggest;
 mod suggest_memory;
+mod watch_templates;
 
 use insi_core::{Config, Task, Worker};
 use insi_eval::mine::{self, Options};
@@ -69,6 +70,7 @@ use insi_memory::store::{FileLessons, LessonStore};
 
 const USAGE: &str = "usage:
   insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
+  insi watch-init [--repo <dir>]
   insi init     [--repo <dir>] [--check \"<cmd {tests}>\"] [--setup \"<cmd>\"] [--force]
                 [--worker incode|claude|codex|agy --model <id>]
                 [--no-mcp] [--no-hooks] [--no-ci]
@@ -403,6 +405,7 @@ fn command_by_name(
 ) -> Result<(), String> {
     match command {
         "init" => init_cmd(flags),
+        "watch-init" => watch_init_cmd(flags),
         "issue" => issue_cmd(flags, work),
         "mine" => mine_cmd(flags),
         "validate" => validate_cmd(flags, work, results),
@@ -557,6 +560,27 @@ fn store(flags: &Flags) -> Result<Store, String> {
     })
 }
 
+/// Add watch templates to an already configured repository without forcing config regeneration.
+fn watch_init_cmd(flags: &Flags) -> Result<(), String> {
+    let repo = PathBuf::from(flags.get("repo").unwrap_or("."));
+    let config = Config::load(&repo)?;
+    let command = if config.test_cmd.is_empty() {
+        init::detect(&repo).map(|d| d.test_cmd).unwrap_or_default()
+    } else {
+        config.test_cmd
+    };
+    let changed = watch_templates::install(&repo, &command)?;
+    println!(
+        ".incord/watch.toml: {} (shared with Inmem; optional tool templates are commented)",
+        if changed {
+            "starter catalog added"
+        } else {
+            "existing catalog preserved"
+        }
+    );
+    Ok(())
+}
+
 fn init_cmd(flags: &Flags) -> Result<(), String> {
     let repo = PathBuf::from(flags.get("repo").unwrap_or("."));
     let setup = flags.has("setup").then(|| flags.argv("setup"));
@@ -583,6 +607,7 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
         None => println!("detected: nothing; using the commands given"),
     }
     println!("wrote {}", done.config_path.display());
+    println!("watch templates: .incord/watch.toml (shared with Inmem; existing checks preserved)");
     println!("  check   {}", done.config.check.join(" "));
     println!(
         "  setup   {}",

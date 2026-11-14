@@ -215,6 +215,44 @@ the behavior; sample lab controls do not establish general security coverage.
 
 ## Quick start
 
+### Inmem / Watchman setup
+
+Insi can run its benchmarks and checks without Inmem. **Scheduled watch checks
+require a running Incord Memory engine and a project registered with that
+engine.** Insi does not install, launch or replace the engine. If Watchman already
+manages Inmem, use that existing instance rather than starting another one.
+For a standalone installation, complete Inmem's own installation/startup first;
+`inmem doctor` checks its health and `inmem setup` registers supported coding
+agents with the installed engine. Neither command is replaced by `insi init`.
+
+Then run `insi init` for a new Insi project, or `insi watch-init --repo .` for an
+existing one. These commands scaffold configuration; they do not immediately
+execute every scanner or start a second scheduler.
+
+`insi init` creates an Insi-owned segment in the shared `.incord/watch.toml`,
+which Inmem already uses. For an existing repository run `insi watch-init`.
+The segment is bounded by `# BEGIN INSI WATCH MODULE` / `# END INSI WATCH MODULE`;
+Insi preserves existing Inmem checks, other agent modules and subsequent edits.
+It does not maintain a second watch file or scheduler. On a new file it can enable
+the detected full test command. Existing watch files receive only the commented
+starter catalog, without a duplicate active suite.
+
+The catalog gives agents templates for language tests, source analysis, secrets,
+dependencies, container checks, application contracts, network, browser and memory
+checks. Agents configure and verify applicable commands before enabling them,
+append `insi:` namespaced checks inside the segment, and preserve all other
+modules. Optional scanner installation, app-specific roles/routes and explicit
+lab targets are still prerequisites; commented examples are not active coverage.
+
+In this repository, the scheduled security suite uses
+`python3 scripts/security/run_checks.py` to select an installed Python with
+`hashlib.scrypt`, even when Inmem's PATH differs from the terminal's. Set
+`INSI_PYTHON` to select an explicit interpreter. Missing compatibility is an
+incomplete check, never a reason to skip authentication tests. See the
+[Inmem integration guide](docs/INCORD-INTEGRATION.md#automation-ownership).
+
+### Build and initialize Insi
+
 Insi is built from source: the npm and pip packages are ready but not yet
 published ([RELEASING.md](RELEASING.md)). You need Rust 1.89 or newer and git.
 

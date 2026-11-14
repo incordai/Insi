@@ -215,6 +215,30 @@ findings. Insi's [test runner](../scripts/ci/test_all.py) remains a convenient
 manual/CI entry point. Avoid registering both that complete runner and all of
 its individual commands for the same engine trigger.
 
+`insi init` now scaffolds its own comment-delimited module in that same watch
+file. `insi watch-init --repo <dir>` adds it to an existing project without
+regenerating `.insi/config.toml`. Existing check tables remain byte-for-byte
+intact; an existing Insi segment, including agent edits, is never regenerated
+even under `init --force`. Inmem and other agents can keep their modules before
+or after it. Normal `[[check]]` tables remain the schema; the BEGIN/END markers
+are comments, not an incompatible nested TOML namespace.
+
+The starter catalog is embedded in the Insi binary. Its instructions tell agents
+to preserve other modules, use stable `insi:` check names, configure actual app
+fixtures, verify prerequisites and execute a command once before scheduling it.
+Optional examples stay commented. A detected full-suite command is enabled only
+when creating a previously absent watch file; existing files get no duplicate
+scheduled suite. An unknown stack receives no guessed active command. Invalid
+TOML or a symlinked watch path is refused, preserving the owner's data.
+
+In this repository the Insi security-fixture watch entry invokes
+`python3 scripts/security/run_checks.py`. The bootstrap selects an installed
+Python with `hashlib.scrypt`, because the engine's PATH can select Apple's Python
+instead of the terminal's Homebrew Python. Set `INSI_PYTHON` to choose a specific
+executable. An unavailable or incompatible override fails as incomplete; the
+launcher never substitutes a weaker password algorithm or skips authentication
+tests. Actual unittest failures keep their original exit status.
+
 Do not schedule `insi improve --code` as an ordinary health check: it can invoke
 a worker and publish a branch/PR. Automatic checks should remain validation
 commands. Improvement execution needs the owner's configured scope and policy.
