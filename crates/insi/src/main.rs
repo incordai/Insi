@@ -54,6 +54,7 @@ mod onboard;
 mod review;
 mod review_evidence;
 mod review_quality;
+mod review_security;
 mod suggest;
 mod suggest_memory;
 

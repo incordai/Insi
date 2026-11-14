@@ -15,6 +15,9 @@ rustup toolchain install 1.89.0 --profile minimal
 
 cargo fetch --locked
 
+# Install the scanner inventory so security tests can execute in the development environment.
+bash scripts/security/install.sh
+
 cat <<'MSG'
 
 Insi dev container ready. Before opening a pull request:

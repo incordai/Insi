@@ -1,0 +1,13 @@
+# macOS tools for security review and disposable lab execution.
+# Metasploit runs in a separately pinned lab image, rather than on the host.
+brew "semgrep"
+brew "trivy"
+brew "gitleaks"
+brew "cargo-audit"
+brew "nmap"
+brew "sqlmap"
+brew "docker"
+brew "colima"
+# Runtime language controls complement scanner-only PHP/Go coverage.
+brew "go"
+brew "php"

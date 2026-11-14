@@ -1,0 +1,58 @@
+# Local rules avoid remote registry fetches during isolated reviews.
+rules:
+  - id: insi.security.rust-forgotten-allocation
+    languages: [rust]
+    severity: WARNING
+    message: Forgotten values bypass Drop; verify intentional lifetime and bounded retained memory.
+    pattern: std::mem::forget($VALUE)
+  - id: insi.security.rust-shell-command
+    languages: [rust]
+    severity: WARNING
+    message: Shell interpretation needs data-flow review; prefer executing a program with separate argv values.
+    pattern: std::process::Command::new("sh").arg("-c").arg($CMD)
+  - id: insi.security.sql-string-concatenation
+    languages: [python]
+    severity: ERROR
+    message: SQL is built with string concatenation; use bound parameters and reproduce the data flow.
+    patterns:
+      - pattern: $DB.execute($LEFT + $RIGHT, ...)
+  - id: insi.security.php-sql-concatenation
+    languages: [php]
+    severity: ERROR
+    message: Concatenated SQL requires bound parameters and a data-flow reproduction.
+    pattern: $DB->query($LEFT . $RIGHT, ...)
+  - id: insi.security.go-sql-concatenation
+    languages: [go]
+    severity: ERROR
+    message: Concatenated SQL requires bound parameters and a data-flow reproduction.
+    pattern: $DB.Query($LEFT + $RIGHT, ...)
+  - id: insi.security.js-sql-concatenation
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Concatenated SQL requires bound parameters and a data-flow reproduction.
+    pattern: $DB.query($LEFT + $RIGHT, ...)
+  - id: insi.security.java-sql-concatenation
+    languages: [java]
+    severity: ERROR
+    message: Use a prepared statement rather than concatenated SQL.
+    pattern: $STMT.executeQuery($LEFT + $RIGHT)
+  - id: insi.security.python-pickle-input
+    languages: [python]
+    severity: WARNING
+    message: Pickle deserialization requires trusted input; prefer a data-only format at trust boundaries.
+    pattern: pickle.loads(...)
+  - id: insi.security.python-shell-command
+    languages: [python]
+    severity: WARNING
+    message: Shell-enabled execution requires a data-flow review; prefer an argv list with shell disabled.
+    pattern: subprocess.run(..., shell=True, ...)
+  - id: insi.security.php-shell-command
+    languages: [php]
+    severity: WARNING
+    message: Concatenated shell commands require a data-flow review; avoid shell interpretation.
+    pattern: shell_exec($LEFT . $RIGHT)
+  - id: insi.security.js-html-sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: HTML assignment requires trusted or sanitized content; prefer textContent for plain text.
+    pattern: $EL.innerHTML = $VALUE

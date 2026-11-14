@@ -11,7 +11,8 @@ def main():
         ['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'],
         ['cargo', 'test', '--workspace', '--locked'],
     ]
-    for directory in ['packaging/pip', 'scripts/checks', 'scripts/ci']:
+    # Security parser and isolation regressions run without optional scanners or Docker.
+    for directory in ['packaging/pip', 'scripts/checks', 'scripts/ci', 'scripts/security']:
         commands.append([sys.executable, '-m', 'unittest', 'discover', '-s', directory, '-p', 'test_*.py'])
     commands.append(['node', 'packaging/npm/test.js'])
     failed = []

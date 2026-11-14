@@ -29,6 +29,14 @@ Container". `.devcontainer/` installs Rust with rustfmt and clippy, the 1.89.0
 toolchain, Python, Node and the GitHub CLI, sets a git identity if none is set,
 and fetches the dependencies, so the commands below run without further setup.
 
+Security tools are installed by `bash scripts/security/install.sh` (also run by
+the dev-container setup). The list includes Semgrep, Trivy, Gitleaks, cargo-audit,
+Nmap, sqlmap and Docker; macOS also gets Colima. See
+[security benchmarks](docs/SECURITY-BENCHMARKS.md) for the tool versions,
+Docker startup and disposable positive/fixed lab controls. Run all local checks,
+including optional installed-scanner smoke tests, with
+`python3 scripts/ci/test_all.py`.
+
 You need Rust 1.89 or newer and git. CI runs these three commands on Windows,
 macOS and Linux, and a pull request is merged only when all three pass:
 

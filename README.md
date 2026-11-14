@@ -100,6 +100,12 @@ The agent is anything with a non-interactive mode: Insi runs it through a
 worker command (`[worker] command`, or `--worker "<cmd {prompt}>"`). The
 default is incode.
 
+Security review can import Semgrep, Trivy, Gitleaks and cargo-audit reports.
+The [security benchmark guide](docs/SECURITY-BENCHMARKS.md) covers tool
+installation, Nmap observations and disposable vulnerable/fixed SQL-injection
+controls. Scanner findings remain tool-reported until a reproduction verifies
+the behavior; sample lab controls do not establish general security coverage.
+
 ## Quick start
 
 Insi is built from source: the npm and pip packages are ready but not yet

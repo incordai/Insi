@@ -1,4 +1,5 @@
 ## Index
+- layout: the folder tree, one line per folder (generated from .incord/layout.toml)
 
 - workspace: the crates and what each owns
 - review-flow: how a PR review runs and publishes
@@ -34,3 +35,23 @@ when repository variable `INSI_AUTO_REVIEW` is `'true'`.
 - `report.json` is produced after PR code ran, so it is untrusted input to
   `review::publish` (`review.rs`).
 - Everything published passes `insi_core::secrets` first.
+
+## Layout
+Generated from `.incord/layout.toml` by `inmem layout render --write`. Do not edit it by hand: change the layout file, get it approved, and render again.
+
+```text
+(root)                   root files allowed: Cargo.toml, Cargo.lock, README.md, LICENSE, LICENSE-MIT, LICENSE-APACHE, rust-toolchain.toml, .gitignore
+.github/                 Trusted CI workflows and repository automation.
+.incord/                 Local engine configuration and ignored scratch artifacts.
+.insi/                   Trusted review and security benchmark example plans.
+crates/insi/             CLI commands, review scanner adapters, security policy and orchestration. (may use: crates/insi-core, crates/insi-connectors, crates/insi-eval, crates/insi-loop, crates/insi-memory)
+crates/insi-connectors/  External context sources and command connectors.
+crates/insi-core/        Shared task, config, usage, trust and secret-scanning types. [core: names no provider]
+crates/insi-eval/        History mining, isolated attempts, process control and benchmark execution.
+crates/insi-loop/        Harness proposals, acceptance, strategy selection and audit trail. (may use: crates/insi-core, crates/insi-eval)
+crates/insi-memory/      Lesson persistence, briefing, extraction and Incord integration. (may use: crates/insi-core)
+docs/                    The project documents: PRD, ROADMAP, ARCHITECTURE and the rest.
+fuzz/                    Parser fuzz targets and corpus metadata.
+packaging/               Python and npm distribution wrappers and their tests.
+scripts/                 CI checks, scanner wrappers, review scripts and reproducible security labs.
+```

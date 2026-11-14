@@ -96,7 +96,10 @@ pub fn read(path: &Path) -> Result<Plan, String> {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             || t.command.first().is_none_or(|s| s.trim().is_empty())
-            || !matches!(t.format.as_str(), "json" | "sarif" | "eslint")
+            || !matches!(
+                t.format.as_str(),
+                "json" | "sarif" | "eslint" | "semgrep" | "trivy" | "gitleaks" | "cargo-audit"
+            )
             || t.accepted_exits.is_empty()
             || !(1..=3600).contains(&t.timeout_secs)
         {
@@ -162,6 +165,14 @@ fn fingerprint(file: &str, rule: &str, message: &str) -> String {
 
 /// All imported claims are tool-reported; producers cannot self-certify a reproduction.
 pub fn normalize(format: &str, value: &Value, source: &str) -> Result<Vec<Finding>, String> {
+    // Native security scanners use the same path validation, deduplication and evidence rules.
+    if matches!(format, "semgrep" | "trivy" | "gitleaks" | "cargo-audit") {
+        return normalize(
+            "json",
+            &crate::review_security::convert(format, value)?,
+            source,
+        );
+    }
     let mut rows = Vec::new();
     match format {
         "json" => {
@@ -503,7 +514,11 @@ fn relative_paths(value: &mut Value, repo: &Path, mount: Option<&Path>) -> Resul
     match value {
         Value::Object(fields) => {
             for (key, v) in fields {
-                if matches!(key.as_str(), "filePath" | "file" | "uri") {
+                // Native scanners use different path keys but share the same checkout boundary.
+                if matches!(
+                    key.as_str(),
+                    "filePath" | "file" | "uri" | "path" | "File" | "Target"
+                ) {
                     if let Some(raw) = v.as_str() {
                         let raw = raw.strip_prefix("file://").unwrap_or(raw);
                         let path = Path::new(raw);

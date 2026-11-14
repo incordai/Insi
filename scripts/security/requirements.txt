@@ -1,0 +1,2 @@
+# Scanner version pinned for the Linux development-container setup.
+semgrep==1.185.0
