@@ -876,7 +876,14 @@ pub fn reported(stdout: &str) -> Option<(Option<String>, Usage)> {
             .as_str()
             .filter(|m| !m.is_empty())
             .map(String::from)
-            .or_else(|| v["modelUsage"].as_object()?.keys().next().cloned());
+            .or_else(|| {
+                // Pick the main worker by output volume; the first key may be a title model.
+                v["modelUsage"]
+                    .as_object()?
+                    .iter()
+                    .max_by_key(|(_, usage)| usage["outputTokens"].as_u64().unwrap_or(0))
+                    .map(|(model, _)| model.clone())
+            });
         Some((
             model,
             Usage {
