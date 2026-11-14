@@ -488,7 +488,8 @@ fn sandbox_mount(config: &Config) -> Option<PathBuf> {
     config.sandbox.as_ref()?.command.iter().find_map(|arg| {
         let inside = arg.strip_prefix("{tree}:")?;
         let mount = inside.split(':').next()?;
-        Path::new(mount).is_absolute().then(|| PathBuf::from(mount))
+        // Linux container mounts remain rooted paths even on a Windows host.
+        (mount.starts_with('/') || Path::new(mount).is_absolute()).then(|| PathBuf::from(mount))
     })
 }
 
@@ -506,7 +507,9 @@ fn relative_paths(value: &mut Value, repo: &Path, mount: Option<&Path>) -> Resul
                     if let Some(raw) = v.as_str() {
                         let raw = raw.strip_prefix("file://").unwrap_or(raw);
                         let path = Path::new(raw);
-                        if path.is_absolute() {
+                        // Container paths have no Windows drive prefix; still validate
+                        // their mount boundary rather than treating them as relative.
+                        if raw.starts_with('/') || path.is_absolute() {
                             let inside = path
                                 .strip_prefix(repo)
                                 .ok()
