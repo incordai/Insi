@@ -38,6 +38,10 @@ class ScannerTests(unittest.TestCase):
             result = subprocess.run(["gitleaks", "dir", directory, "--no-banner", "--log-level", "error", "--report-format", "json", "--report-path", str(report)], capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, "Gitleaks failed to scan a clean fixture")
             self.assertEqual(json.loads(report.read_text()), [])
+            # Insi captures stdout through pipes; Gitleaks' portable stdout target is '-', not /dev/stdout.
+            streamed = subprocess.run(["gitleaks", "dir", directory, "--no-banner", "--log-level", "error", "--report-format", "json", "--report-path", "-", "--redact"], capture_output=True, timeout=30)
+            self.assertEqual(streamed.returncode, 0, "Gitleaks stdout report failed")
+            self.assertEqual(json.loads(streamed.stdout), [])
 
     @unittest.skipUnless(shutil.which("semgrep"), "Semgrep is not installed")
     def test_semgrep_detects_positive_and_rejects_parameterized_negative(self):

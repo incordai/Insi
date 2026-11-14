@@ -72,15 +72,51 @@ pub fn is_test_file(path: &str, markers: &[String]) -> bool {
         || (name.starts_with("test_") && name.ends_with(".py"))
 }
 
-/// Whether a commit subject reads as a fix.
+/// Whether a commit subject reads as a fix. Respect explicit non-repair types
+/// before scanning words: feature regression controls are not a bug repair.
 pub fn looks_like_fix(subject: &str) -> bool {
-    let s = subject.to_ascii_lowercase();
-    s.starts_with("fix")
-        || [
-            "fix(", "fix:", " fix ", "fixes ", "bug", "crash", "regress", "broke", "wrong",
-        ]
-        .iter()
-        .any(|w| s.contains(w))
+    let s = subject.trim().to_ascii_lowercase();
+    if s.starts_with("fixup!") || s.starts_with("squash!") {
+        return false;
+    }
+    if let Some((prefix, _)) = s.split_once(':') {
+        let kind = prefix
+            .split('(')
+            .next()
+            .unwrap_or(prefix)
+            .trim_end_matches('!');
+        match kind {
+            "fix" => return true,
+            "feat" | "docs" | "test" | "tests" | "build" | "ci" | "chore" | "perf" | "refactor"
+            | "style" | "revert" => return false,
+            _ => {}
+        }
+    }
+    // Match words rather than substrings, so fixtures and debug tooling do
+    // not enter a repair benchmark through "fix" or "bug" inside their names.
+    s.split(|c: char| !c.is_ascii_alphanumeric()).any(|word| {
+        matches!(
+            word,
+            "fix"
+                | "fixes"
+                | "fixed"
+                | "bug"
+                | "bugs"
+                | "bugfix"
+                | "bugfixes"
+                | "hotfix"
+                | "crash"
+                | "crashes"
+                | "crashed"
+                | "regress"
+                | "regression"
+                | "regressions"
+                | "regressed"
+                | "broke"
+                | "broken"
+                | "wrong"
+        )
+    })
 }
 
 /// Files a docs-only or config-only change touches; a fix must change more.
@@ -233,10 +269,26 @@ mod tests {
             "fix(codex): persist images (#399)",
             "Fix project rail reopening lag",
             "projects: a wrong path no longer hides the name",
+            "bugfix: preserve Unicode paths",
+            "Fix #42: Git-quoted Unicode paths abort task mining",
         ] {
             assert!(looks_like_fix(s), "{s}");
         }
-        for s in ["feat: add a picker", "docs: README", "refactor the store"] {
+        // Explicit feature, documentation and test work is not a repair just
+        // because its subject mentions crashes or regression controls.
+        for s in [
+            "feat: add a picker",
+            "docs: README",
+            "refactor the store",
+            "feat: add security scanner adapters and memory regression controls",
+            "feat(api)!: expose crash reports",
+            "test: add regression fixtures",
+            "docs: explain how to fix a crash",
+            "fixup! feat: add a picker",
+            "squash! feat: add a picker",
+            "Add debug tooling",
+            "Fixtures for the parser",
+        ] {
             assert!(!looks_like_fix(s), "{s}");
         }
     }
@@ -284,6 +336,13 @@ mod tests {
         std::fs::write(dir.join("src/other.ts"), "x\n").expect("w");
         sh(&["add", "."]);
         sh(&["commit", "-q", "-m", "fix: other, with no test"]);
+
+        // A feature touching source and regression tests used to become a
+        // second task through the substring heuristic. Keep only the repair.
+        std::fs::write(dir.join("src/controls.ts"), "export const controls = 1;\n").expect("w");
+        std::fs::write(dir.join("src/controls.test.ts"), "regression controls\n").expect("w");
+        sh(&["add", "."]);
+        sh(&["commit", "-q", "-m", "feat: add memory regression controls"]);
 
         let opts = Options {
             test_markers: markers(),

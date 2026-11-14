@@ -195,7 +195,7 @@ Examples of operator-owned command arguments:
 | --- | --- |
 | semgrep | `semgrep scan --config /trusted/rules.yml --json .` |
 | trivy | `trivy fs --scanners vuln,misconfig,secret --format json .` |
-| gitleaks | `gitleaks dir --report-format json --report-path /dev/stdout --redact .` |
+| gitleaks | `gitleaks dir --report-format json --report-path - --redact .` |
 | cargo-audit | `cargo audit --json --no-fetch` |
 
 Keep rule files and advisory databases pinned in the trusted scanner image;
