@@ -676,9 +676,20 @@ cache_write = 3.75
 cache_read = 0.3
 ```
 
-Any agent with a non-interactive mode can be the worker. The model and token
-counts are read from incode's `stream-json` result; another worker's attempts
-are timed but not counted in tokens. `--spec-gate=off` keeps incode from
+Any agent with a non-interactive mode can be the worker. Insi reads answers,
+models and token usage from incode, Claude, Codex and Antigravity machine
+output. Codex cached input is charged separately; Antigravity thinking tokens
+count as output. Missing stream models fall back to `--model` or `-m`.
+Use `insi init --worker claude --model <id>` (also `codex` or `agy`) to write
+a headless preset with CLI-specific writable state paths inside `sbx`.
+These presets require `sbx` and a pinned model. `insi doctor` warns about
+missing output, permission and model flags without printing their values.
+For wrapper commands set `[worker] format` to `incode`, `claude`, `codex`,
+`agy` or `text`; otherwise known executable names are inferred. Plain-text
+workers are timed without token accounting. Worker exits are recorded in
+attempt notes; failed startup without a diff and explicit auth/API failures
+are infrastructure errors rather than learning examples.
+`--spec-gate=off` keeps incode from
 writing its spec documents before each already-scoped task (it needs an incode
 that has the flag; an older one refuses it by name).
 

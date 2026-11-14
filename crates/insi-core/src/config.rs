@@ -229,6 +229,9 @@ impl Price {
 #[serde(deny_unknown_fields)]
 pub struct Worker {
     pub command: Vec<String>,
+    /// Explicit output protocol for wrapper commands; otherwise inferred from the executable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     /// Files the harness writes for itself in the worktree — its state, its
     /// generated docs, its backups — as git glob pathspecs. They are left out
     /// of the worker's recorded diff, which is what a lesson is written from:
@@ -264,6 +267,149 @@ pub struct Places<'a> {
 }
 
 impl Worker {
+    /// Claude's sandboxed headless preset with an explicit model.
+    pub fn claude(model: &str) -> Result<Self, String> {
+        Self::preset("claude", model)
+    }
+
+    /// Codex's sandboxed headless preset with an explicit model.
+    pub fn codex(model: &str) -> Result<Self, String> {
+        Self::preset("codex", model)
+    }
+
+    /// Antigravity's sandboxed headless preset with an explicit model.
+    pub fn agy(model: &str) -> Result<Self, String> {
+        Self::preset("agy", model)
+    }
+    /// Infer known CLI protocols; wrappers can override this with worker.format.
+    pub fn output_format(&self) -> &str {
+        self.format.as_deref().unwrap_or_else(|| {
+            match self
+                .command
+                .first()
+                .and_then(|p| std::path::Path::new(p).file_stem())
+                .and_then(|s| s.to_str())
+            {
+                Some("incode") => "incode",
+                Some("claude") => "claude",
+                Some("codex") => "codex",
+                Some("agy") => "agy",
+                _ => "auto",
+            }
+        })
+    }
+
+    /// Read the final answer using the configured protocol, preserving explicit text workers.
+    pub fn answer(&self, stdout: &str) -> Option<String> {
+        if self.output_format() == "text" {
+            let text = stdout.trim();
+            return (!text.is_empty()).then(|| text.into());
+        }
+        crate::worker_answer(stdout)
+    }
+    /// Build an unattended CLI preset with its credential paths writable only inside sbx.
+    /// The model is explicit so experiments never silently follow a CLI default.
+    pub fn preset(name: &str, model: &str) -> Result<Self, String> {
+        let (command, paths, own): (Vec<&str>, Vec<&str>, &str) = match name {
+            "incode" => return Ok(Self::incode()),
+            "claude" => (
+                vec![
+                    "claude",
+                    "-p",
+                    PROMPT,
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--model",
+                    model,
+                    "--permission-mode",
+                    "bypassPermissions",
+                    "--setting-sources",
+                    "project",
+                    "--strict-mcp-config",
+                    "--no-session-persistence",
+                ],
+                vec!["~/.claude", "~/.claude.json"],
+                ".claude/**",
+            ),
+            "codex" => (
+                vec![
+                    "codex",
+                    "exec",
+                    "--json",
+                    "-m",
+                    model,
+                    "--skip-git-repo-check",
+                    "--dangerously-bypass-approvals-and-sandbox",
+                    PROMPT,
+                ],
+                vec!["~/.codex"],
+                ".codex/**",
+            ),
+            "agy" => (
+                vec![
+                    "agy",
+                    "-p",
+                    PROMPT,
+                    "--output-format",
+                    "stream-json",
+                    "--model",
+                    model,
+                    "--dangerously-skip-permissions",
+                    "--disable-slash-commands",
+                ],
+                vec!["~/.gemini/antigravity-cli"],
+                ".gemini/**",
+            ),
+            _ => return Err("unknown worker preset; use incode, claude, codex or agy".into()),
+        };
+        if model.trim().is_empty() {
+            return Err("pin a model with --model when selecting this worker".into());
+        }
+        let mut sandbox: Vec<String> = ["sbx", "run", "-q", "-w", TREE].map(String::from).to_vec();
+        for path in paths {
+            sandbox.extend(["-w".into(), path.into()]);
+        }
+        sandbox.extend(["--deny-read", SOURCE, "--deny-read", PRIVATE, "--"].map(String::from));
+        Ok(Self {
+            format: Some(name.into()),
+            command: command.into_iter().map(String::from).collect(),
+            sandbox,
+            own_files: vec![own.into()],
+        })
+    }
+
+    /// Recover a pinned model when the CLI stream omits it, including equals-style flags.
+    pub fn model(&self) -> Option<String> {
+        for (index, arg) in self.command.iter().enumerate() {
+            if arg == "--model" || arg == "-m" {
+                return self.command.get(index + 1).cloned();
+            }
+            if let Some(model) = arg
+                .strip_prefix("--model=")
+                .or_else(|| arg.strip_prefix("-m="))
+            {
+                return Some(model.into());
+            }
+        }
+        None
+    }
+
+    /// Presets round-trip through TOML and keep each CLI's state writable in its sandbox.
+    #[cfg(test)]
+    fn presets_pin_models_and_keep_cli_specific_paths() {
+        for (name, path) in [
+            ("claude", "~/.claude"),
+            ("codex", "~/.codex"),
+            ("agy", "~/.gemini/antigravity-cli"),
+        ] {
+            let worker = Self::preset(name, "pinned-model").expect("preset");
+            assert_eq!(worker.model().as_deref(), Some("pinned-model"));
+            assert_eq!(worker.output_format(), name);
+            assert!(worker.sandbox.contains(&path.to_string()));
+            assert!(worker.sandbox_problem().is_none());
+        }
+    }
     /// The default adapter: incode, printing its events as JSON lines so the
     /// run's token use can be read back.
     ///
@@ -275,6 +421,7 @@ impl Worker {
     /// result line.
     pub fn incode() -> Self {
         Worker {
+            format: None,
             command: [
                 "incode",
                 "-t",
@@ -306,6 +453,7 @@ impl Worker {
     /// A worker given as a bare command, with no files of its own declared.
     pub fn command(command: Vec<String>) -> Self {
         Worker {
+            format: None,
             command,
             own_files: Vec::new(),
             sandbox: Vec::new(),
@@ -426,6 +574,18 @@ impl Config {
 
     pub fn parse(text: &str) -> Result<Config, String> {
         let config: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+        // Reject misspelled protocols before any worker is launched.
+        for worker in [config.worker.as_ref(), config.proposer.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !matches!(
+                worker.output_format(),
+                "auto" | "incode" | "claude" | "codex" | "agy" | "text"
+            ) {
+                return Err("worker.format must be incode, claude, codex, agy or text".into());
+            }
+        }
         if let Some(why) = config
             .topic
             .as_deref()
@@ -688,6 +848,8 @@ mod tests {
 
     #[test]
     fn a_worker_must_be_handed_the_prompt() {
+        // Exercise all preset models and writable state paths alongside command validation.
+        Worker::presets_pin_models_and_keep_cli_specific_paths();
         let argv = Worker::incode().render("fix the bug").expect("renders");
         assert!(argv.contains(&"fix the bug".to_string()), "{argv:?}");
         assert!(

@@ -42,7 +42,115 @@ pub fn first_json_object<T: serde::de::DeserializeOwned>(text: &str) -> Result<T
             return Ok(value);
         }
     }
-    Err("the answer has no valid JSON object".into())
+    // Retain the established missing-object diagnostic for callers and existing tooling.
+    Err("the answer has no JSON object".into())
+}
+
+/// Normalize machine output once for eval, lesson writing and proposal generation.
+/// Incomplete event streams never become plain-text answers.
+pub fn worker_answer(stdout: &str) -> Option<String> {
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str(line.trim()).ok())
+        .collect();
+    if events
+        .iter()
+        .any(|v| v["type"] == "turn.failed" || v["type"] == "error" || v["is_error"] == true)
+    {
+        return None;
+    }
+    let codex = events.iter().any(|v| {
+        v["type"].as_str().is_some_and(|t| {
+            t.starts_with("thread.") || t.starts_with("turn.") || t.starts_with("item.")
+        })
+    });
+    if codex {
+        if !events.iter().any(|v| v["type"] == "turn.completed") {
+            return None;
+        }
+        return events.iter().rev().find_map(|v| {
+            (v["type"] == "item.completed" && v["item"]["type"] == "agent_message")
+                .then(|| v["item"]["text"].as_str().map(String::from))
+                .flatten()
+        });
+    }
+    for v in events.iter().rev() {
+        if v["event"] == "result" || v.get("status").is_some() {
+            let result = if v["event"] == "result" {
+                &v["result"]
+            } else {
+                v
+            };
+            return (result["status"] == "SUCCESS")
+                .then(|| result["response"].as_str().map(String::from))
+                .flatten();
+        }
+        if v["type"] == "result" {
+            return v["result"].as_str().map(String::from);
+        }
+    }
+    if events
+        .iter()
+        .any(|v| v.get("type").is_some() || v.get("event").is_some())
+    {
+        return None;
+    }
+    let text = stdout.trim();
+    (!text.is_empty()).then(|| text.into())
+}
+
+/// Detect explicit service/auth failures even when the CLI exits zero or leaves a diff.
+/// Max-turn exhaustion remains an agent failure, so it can still be judged by tests.
+pub fn worker_infrastructure_error(stdout: &str) -> bool {
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .any(|v| {
+            let failed = v["is_error"] == true
+                || v["type"] == "turn.failed"
+                || v["type"] == "error"
+                || v["status"] == "ERROR"
+                || v["result"]["status"] == "ERROR";
+            if !failed || v["subtype"] == "error_max_turns" {
+                return false;
+            }
+            let text = v.to_string().to_ascii_lowercase();
+            [
+                "rate_limit",
+                "rate limit",
+                "authentication",
+                "unauthorized",
+                "not logged in",
+                "login",
+                "overloaded",
+                "api_error",
+                "invalid_api_key",
+                "unknown option",
+                "unknown flag",
+            ]
+            .iter()
+            .any(|needle| text.contains(needle))
+        })
+}
+
+/// Service failures are infrastructure; exhaustion and incomplete output cannot produce lessons.
+#[test]
+fn worker_failures_and_completion_are_distinguished() {
+    for line in [
+        r#"{"type":"result","is_error":true,"subtype":"error_during_execution","error":"rate limit"}"#,
+        r#"{"type":"turn.failed","error":{"message":"authentication required"}}"#,
+        r#"{"event":"result","result":{"status":"ERROR","error":"API overloaded"}}"#,
+    ] {
+        assert!(worker_infrastructure_error(line));
+        assert!(worker_answer(line).is_none());
+    }
+    assert!(!worker_infrastructure_error(
+        r#"{"type":"result","is_error":true,"subtype":"error_max_turns"}"#
+    ));
+    assert!(worker_answer(
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"preamble"}}"#
+    )
+    .is_none());
 }
 
 /// Prose braces and fenced output must not hide the first typed object.

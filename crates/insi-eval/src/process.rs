@@ -12,7 +12,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The tail of each output stream that is kept.
-pub const KEEP: usize = 64 * 1024;
+// A 64 KiB proposal can expand twice through JSON escaping; reserve room for its envelope.
+pub const KEEP: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -199,6 +200,30 @@ fn kill_group(pid: u32) {
     }
     // SAFETY: kill takes integer values and accesses no Rust memory.
     let _ = unsafe { kill(-group, 9) };
+}
+
+/// Invalid and definitely absent groups must never signal a live bystander.
+#[cfg(unix)]
+#[test]
+fn killing_missing_groups_preserves_a_bystander() {
+    let mut child = Command::new("sleep").arg("30").spawn().expect("bystander");
+    for group in [0, 1, u32::MAX, i32::MAX as u32] {
+        kill_group(group);
+    }
+    let alive = child.try_wait().expect("status").is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(alive);
+}
+
+/// A maximum proposal remains parseable after two layers of worst-case JSON escaping.
+#[test]
+fn maximum_escaped_proposal_fits_in_kept_output() {
+    let proposal = serde_json::json!({"file":"prompt.md", "content":"\u{0001}".repeat(64 * 1024), "why":"test"}).to_string();
+    let envelope = serde_json::json!({"type":"result", "result":proposal}).to_string();
+    let output = drain(Some(std::io::Cursor::new(envelope.clone().into_bytes()))).finish();
+    assert_eq!(output, envelope);
+    assert!(insi_core::worker_answer(&output).is_some());
 }
 
 /// Names that tie a process to the agent session that launched Insi. Removed

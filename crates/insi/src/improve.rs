@@ -36,7 +36,6 @@ use insi_loop::audit::{self, Event};
 use insi_loop::bandit::Bandit;
 use insi_loop::harness::Harness;
 use insi_loop::proposal;
-use insi_memory::writer;
 
 /// How long the proposer may take for one proposal.
 pub const PROPOSE_SECS: u64 = 10 * 60;
@@ -427,7 +426,10 @@ fn propose(l: &Improve, ld: &LoopDir, step: u32, prompt: &str) -> Result<String,
             }
         ));
     }
-    writer::final_answer(&ran.stdout).ok_or_else(|| "the proposer answered nothing".to_string())
+    // Use the same configured output adapter as eval and lesson writing.
+    l.proposer
+        .answer(&ran.stdout)
+        .ok_or_else(|| "the proposer answered nothing".to_string())
 }
 
 /// What the proposer is told. Task titles and outcomes, never a check's

@@ -633,10 +633,21 @@ fn work_and_check(
             )
         })?;
         result.timed_out = ran.timed_out;
-        if let Some((model, usage)) = reported(&ran.stdout) {
+        // Keep the exit status with the attempt even when subsequent checks cannot run.
+        result
+            .notes
+            .push(format!("worker exit code: {:?}", ran.code));
+        if let Some((model, usage)) = (a.worker.output_format() != "text")
+            .then(|| reported(&ran.stdout))
+            .flatten()
+        {
             result.tokens = Some(usage.total());
-            result.model = model;
+            result.model = model.or_else(|| a.worker.model());
             result.usage = Some(usage);
+        }
+        // Text workers can still pin a model even though they provide no token report.
+        if result.model.is_none() {
+            result.model = a.worker.model();
         }
         keep(artifacts, WORKER_OUTPUT, &ran.tail())?;
         if ran.timed_out {
@@ -647,7 +658,17 @@ fn work_and_check(
         // What the worker changed, new files included, before the hidden
         // tests are copied over it. The worktree's index is its own.
         git(tree, &["add", "--all"])?;
-        keep(artifacts, WORKER_DIFF, &worker_diff(tree, a.worker)?)?;
+        let diff = worker_diff(tree, a.worker)?;
+        keep(artifacts, WORKER_DIFF, &diff)?;
+        // A CLI that failed before changing code is infrastructure noise, not a task failure.
+        if insi_core::worker_infrastructure_error(&ran.stdout)
+            || (!ran.success() && !ran.timed_out && diff.trim().is_empty())
+        {
+            return Err(format!(
+                "worker exited before producing a diff (exit {:?})",
+                ran.code
+            ));
+        }
         public_check(tree, artifacts, task, result)?;
     }
     // The hidden tests, only now: whatever the worker wrote at these paths
@@ -883,6 +904,15 @@ pub fn reported(stdout: &str) -> Option<(Option<String>, Usage)> {
                     .iter()
                     .max_by_key(|(_, usage)| usage["outputTokens"].as_u64().unwrap_or(0))
                     .map(|(model, _)| model.clone())
+            })
+            .or_else(|| {
+                // Older Claude result envelopes omit modelUsage but the init event pins the model.
+                stdout.lines().find_map(|line| {
+                    let init: serde_json::Value = serde_json::from_str(line).ok()?;
+                    (init["type"] == "system" && init["subtype"] == "init")
+                        .then(|| init["model"].as_str().map(String::from))
+                        .flatten()
+                })
             });
         Some((
             model,
@@ -988,6 +1018,33 @@ mod tests {
 
     #[test]
     fn tokens_are_read_from_incodes_final_result() {
+        // Claude's title model sorts first but must not replace the main worker.
+        let claude = r#"{"type":"result","usage":{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":30,"cache_read_input_tokens":40},"modelUsage":{"a-title":{"outputTokens":1},"z-worker":{"outputTokens":20}}}"#;
+        let (model, usage) = reported(claude).expect("Claude usage");
+        assert_eq!(model.as_deref(), Some("z-worker"));
+        assert_eq!(
+            (
+                usage.input,
+                usage.output,
+                usage.cache_creation,
+                usage.cache_read
+            ),
+            (10, 20, 30, 40)
+        );
+        // Codex totals include cached input and reasoning output already.
+        let codex = r#"{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens":1024,"output_tokens":12,"reasoning_output_tokens":5}}"#;
+        let (model, usage) = reported(codex).expect("Codex usage");
+        assert_eq!(model, None);
+        assert_eq!(
+            (usage.input, usage.cache_read, usage.output),
+            (210, 1024, 12)
+        );
+        // Antigravity bills thinking as output in both supported envelopes.
+        let agy = r#"{"status":"SUCCESS","response":"OK","usage":{"input_tokens":5000,"output_tokens":800,"thinking_tokens":300,"cache_read_tokens":2000}}"#;
+        for transcript in [agy.to_string(), format!("{{\"event\":\"init\",\"model\":\"agy-model\"}}\n{{\"event\":\"result\",\"result\":{agy}}}")] {
+            let (_, usage) = reported(&transcript).expect("agy usage");
+            assert_eq!((usage.input, usage.output, usage.cache_read), (5000, 1100, 2000));
+        }
         let out = "{\"type\":\"init\"}\n{\"type\":\"usage\",\"input_tokens\":5}\n\
                    {\"type\":\"result\",\"model\":\"m-1\",\"usage\":{\"input_tokens\":100,\
                    \"output_tokens\":20,\"cache_creation_tokens\":3,\"cache_read_tokens\":400}}\n";
@@ -1196,6 +1253,31 @@ mod tests {
             format!("{}|{}", tree.display(), store.private.display())
         );
         assert!(!tree.join(".git").join("FETCH_HEAD").exists());
+        // Failed startup with no edits is infrastructure; a wrong edited answer remains judgeable.
+        for (seed, script, infrastructure) in [
+            (1, "exit 7", true),
+            (2, "echo wrong > sum.ts; exit 7", false),
+        ] {
+            let worker =
+                Worker::command(["sh", "-c", script, "{prompt}"].map(String::from).to_vec());
+            let result = attempt(
+                &work,
+                &store,
+                &Attempt {
+                    task: &task,
+                    kind: Kind::Worker,
+                    seed,
+                    worker: &worker,
+                    preface: "",
+                    briefed: vec![],
+                    tags: vec![],
+                    keep: true,
+                    harness: None,
+                },
+            );
+            assert_eq!(result.error.is_some(), infrastructure, "{result:?}");
+            assert!(result.notes.iter().any(|note| note.contains("Some(7)")));
+        }
     }
 
     /// **THE CONTROLS RUN FOR REAL.** In a two-commit repository whose fix

@@ -10,7 +10,7 @@
 //! `insi` — the command line.
 //!
 //! ```text
-//! insi init     [--repo <dir>] [--check "<cmd {tests}>"] [--setup "<cmd>"] [--force]
+//! insi init     [--repo <dir>] [--check "<cmd {tests}>"] [--setup "<cmd>"] [--worker <name> --model <id>] [--force]
 //!               [--no-mcp] [--no-hooks] [--no-ci]
 //! insi mine     [--source <repo>] [--tasks <dir>] [--private <dir>] [--check "<cmd {tests}>"]
 //!               [--setup "<cmd>"] [--public-check "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
@@ -69,6 +69,7 @@ use insi_memory::store::{FileLessons, LessonStore};
 const USAGE: &str = "usage:
   insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
   insi init     [--repo <dir>] [--check \"<cmd {tests}>\"] [--setup \"<cmd>\"] [--force]
+                [--worker incode|claude|codex|agy --model <id>]
                 [--no-mcp] [--no-hooks] [--no-ci]
                 (each --no-* keeps that file out of the repository: .mcp.json,
                 .claude/settings.json, .github/workflows/insi.yml)
@@ -563,12 +564,18 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
         hooks: !flags.has("no-hooks"),
         ci: !flags.has("no-ci"),
     };
-    let done = init::init(
+    // Validate worker and model before init writes the repository configuration.
+    let worker = flags
+        .get("worker")
+        .map(|name| insi_core::Worker::preset(name, flags.get("model").unwrap_or("")))
+        .transpose()?;
+    let done = init::init_with_worker(
         &repo,
         flags.argv("check"),
         setup,
         flags.has("force"),
         writes,
+        worker,
     )?;
     match &done.detected {
         Some(d) => println!("detected: {}", d.stack),

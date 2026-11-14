@@ -76,6 +76,19 @@ mod tests {
 
     #[test]
     fn a_proposal_is_read_from_the_answer() {
+        // Surrounding prose and later objects must not corrupt the first valid proposal.
+        let object = r#"{"file":"prompt.md","content":"new","why":"clearer"}"#;
+        for answer in [
+            format!("before {{placeholder}} {object} after {{anything}}"),
+            format!("{object} {object}"),
+            format!("```json\n{object}\n```"),
+        ] {
+            assert_eq!(
+                parse(&answer, &incumbent()).expect("proposal").content,
+                "new"
+            );
+        }
+        assert!(parse("no object", &incumbent()).is_err());
         let p = parse(
             "Here it is:\n{\"file\": \"prompt.md\", \"content\": \"new\", \"why\": \"clearer\"}\nDone.",
             &incumbent(),
