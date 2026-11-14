@@ -110,6 +110,8 @@ fn git_version(repo: &Path) -> String {
     }
 }
 
+// Check executable files with platform-specific expressions; early boolean returns
+// became redundant after conditional compilation and failed strict Clippy checks.
 fn executable_found(program: &str, repo: &Path) -> bool {
     let path = Path::new(program);
     if program.is_empty() {
@@ -119,17 +121,14 @@ fn executable_found(program: &str, repo: &Path) -> bool {
         let Ok(meta) = p.metadata() else {
             return false;
         };
-        if !meta.is_file() {
-            return false;
-        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            meta.permissions().mode() & 0o111 != 0
+            meta.is_file() && meta.permissions().mode() & 0o111 != 0
         }
         #[cfg(not(unix))]
         {
-            true
+            meta.is_file()
         }
     };
     if path.is_absolute() || path.components().count() > 1 {
@@ -144,16 +143,19 @@ fn executable_found(program: &str, repo: &Path) -> bool {
         } else {
             repo.join(dir)
         };
-        if usable(&dir.join(program)) {
-            return true;
-        }
+        // Windows also accepts command suffixes; other platforms use the direct path.
+        let direct = usable(&dir.join(program));
         #[cfg(windows)]
-        for extension in ["exe", "cmd", "bat"] {
-            if usable(&dir.join(format!("{program}.{extension}"))) {
-                return true;
-            }
+        {
+            direct
+                || ["exe", "cmd", "bat"]
+                    .iter()
+                    .any(|extension| usable(&dir.join(format!("{program}.{extension}"))))
         }
-        false
+        #[cfg(not(windows))]
+        {
+            direct
+        }
     })
 }
 
