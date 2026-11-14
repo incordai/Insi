@@ -148,7 +148,9 @@ fn write_one(l: &Learn, task: &Task, r: &EvalResult) -> Result<Lesson, String> {
             }
         ));
     }
-    let answer = writer::final_answer(&ran.stdout)
+    let answer = l
+        .worker
+        .answer(&ran.stdout)
         .ok_or_else(|| "the lesson writer answered nothing".to_string())?;
     let draft = writer::parse(&answer)?;
     let base = (l.topic)(task);

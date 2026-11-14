@@ -31,10 +31,16 @@ pub fn report(repo: &Path, work: &Path, markdown: bool) -> String {
                 .into(),
             );
             let program = config.worker().command.first().cloned().unwrap_or_default();
+            // Report missing headless flags without exposing any configured values.
+            lines.extend(
+                worker_warnings(&config.worker().command)
+                    .into_iter()
+                    .map(String::from),
+            );
             let status = executable_found(&program, repo);
             // Never print arbitrary program names, which may themselves be secrets.
             let name = match program.as_str() {
-                "incode" | "claude" | "codex" | "aider" | "opencode" => &program,
+                "incode" | "claude" | "codex" | "agy" | "aider" | "opencode" => &program,
                 _ => "<custom worker>",
             };
             lines.push(format!(
@@ -75,6 +81,106 @@ pub fn report(repo: &Path, work: &Path, markdown: bool) -> String {
         format!("### Insi diagnostics\n\n```text\n{body}\n```")
     } else {
         body
+    }
+}
+
+/// Check known CLI requirements using static warning text so arguments stay private.
+fn worker_warnings(command: &[String]) -> Vec<&'static str> {
+    let has = |flag: &str| {
+        command
+            .iter()
+            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    };
+    let output = |allowed: &[&str]| {
+        command
+            .windows(2)
+            .any(|pair| pair[0] == "--output-format" && allowed.contains(&pair[1].as_str()))
+            || allowed
+                .iter()
+                .any(|value| has(&format!("--output-format={value}")))
+    };
+    let mut warnings = Vec::new();
+    let Some(program) = command.first() else {
+        return warnings;
+    };
+    let (machine, approval, model) = match program.as_str() {
+        "claude" => (
+            output(&["stream-json"]) && has("--verbose"),
+            [
+                "--permission-mode",
+                "--dangerously-skip-permissions",
+                "--allowedTools",
+            ]
+            .iter()
+            .any(|flag| has(flag)),
+            has("--model"),
+        ),
+        "codex" => (
+            has("exec") && has("--json"),
+            [
+                "--full-auto",
+                "--sandbox",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ]
+            .iter()
+            .any(|flag| has(flag)),
+            has("--model") || has("-m"),
+        ),
+        "agy" => (
+            output(&["json", "stream-json"]),
+            has("--dangerously-skip-permissions"),
+            has("--model"),
+        ),
+        _ => return warnings,
+    };
+    if !machine {
+        warnings.push("Warning: worker is missing required machine output flags");
+    }
+    if !approval {
+        warnings.push("Warning: worker is missing a headless auto-approval flag");
+    }
+    if !model {
+        warnings.push("Warning: worker has no pinned model");
+    }
+    warnings
+}
+
+/// Each supported CLI needs machine output, permission and model flags, without leaking values.
+#[test]
+fn known_workers_warn_only_for_missing_flags() {
+    for command in [
+        vec![
+            "claude",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+            "--model",
+            "private-model",
+        ],
+        vec![
+            "codex",
+            "exec",
+            "--json",
+            "--full-auto",
+            "-m",
+            "private-model",
+        ],
+        vec![
+            "agy",
+            "--output-format",
+            "json",
+            "--dangerously-skip-permissions",
+            "--model",
+            "private-model",
+        ],
+    ] {
+        let complete: Vec<String> = command.iter().map(|s| s.to_string()).collect();
+        assert!(worker_warnings(&complete).is_empty());
+        let warnings = worker_warnings(&complete[..1]);
+        assert_eq!(warnings.len(), 3);
+        assert!(!warnings.join(" ").contains("private-model"));
     }
 }
 

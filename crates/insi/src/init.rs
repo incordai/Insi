@@ -334,12 +334,26 @@ fn repo_name(repo: &Path) -> String {
 /// `check` and `setup`, when given, replace what was detected. Refused when a
 /// config is already there and `force` is not set: a person's edits are not
 /// overwritten by a guess.
+#[cfg(test)]
 pub fn init(
     repo: &Path,
     check: Vec<String>,
     setup: Option<Vec<String>>,
     force: bool,
     writes: Writes,
+) -> Result<Initialised, String> {
+    // Preserve the library entry point while CLI callers can select a worker preset.
+    init_with_worker(repo, check, setup, force, writes, None)
+}
+
+/// Initialise with an already validated worker so invalid CLI choices write no files.
+pub fn init_with_worker(
+    repo: &Path,
+    check: Vec<String>,
+    setup: Option<Vec<String>>,
+    force: bool,
+    writes: Writes,
+    worker: Option<insi_core::Worker>,
 ) -> Result<Initialised, String> {
     let dir = repo.join(DIR);
     let config_path = dir.join(FILE);
@@ -376,6 +390,7 @@ pub fn init(
         .as_ref()
         .and_then(|d| ci_workflow(d.kind, &setup, &test_cmd));
     let config = Config {
+        worker,
         topic: Some(name.clone()),
         test_cmd,
         check,
@@ -558,6 +573,21 @@ mod tests {
     /// --force; a repo it cannot read asks for --check.
     #[test]
     fn init_writes_a_config_that_reads_back_and_keeps_edits() {
+        // Persist each selected worker, including model, protocol and CLI-specific sandbox paths.
+        for name in ["claude", "codex", "agy"] {
+            let repo = repo_with(&[("notes.txt", "")]);
+            let worker = insi_core::Worker::preset(name, "pinned-model").expect("preset");
+            init_with_worker(
+                &repo,
+                argv(&["true"]),
+                Some(vec![]),
+                false,
+                ALL,
+                Some(worker.clone()),
+            )
+            .expect("init preset");
+            assert_eq!(Config::load(&repo).expect("config").worker, Some(worker));
+        }
         let repo = repo_with(&[
             ("package.json", r#"{"devDependencies":{"vitest":"^3"}}"#),
             ("package-lock.json", "{}"),

@@ -64,29 +64,15 @@ restate this task's specific answer; no code blocks; each field at most two sent
 /// ends with `{"type":"result","result":"…"}`; anything else is taken as the
 /// answer itself.
 pub fn final_answer(stdout: &str) -> Option<String> {
-    let from_result = stdout.lines().rev().find_map(|line| {
-        let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-        (v["type"] == "result")
-            .then(|| v["result"].as_str().map(str::to_string))
-            .flatten()
-    });
-    from_result.or_else(|| {
-        let text = stdout.trim();
-        (!text.is_empty()).then(|| text.to_string())
-    })
+    // All consumers share completion and failure handling with the core adapter.
+    insi_core::worker_answer(stdout)
 }
 
 /// The lesson in a model's answer: the first JSON object in it, with every
 /// field present, non-empty, and short.
 pub fn parse(answer: &str) -> Result<Draft, String> {
-    let start = answer
-        .find('{')
-        .ok_or_else(|| "the answer has no JSON object".to_string())?;
-    let end = answer
-        .rfind('}')
-        .filter(|&e| e > start)
-        .ok_or_else(|| "the answer's JSON object is not closed".to_string())?;
-    let mut draft: Draft = serde_json::from_str(&answer[start..=end])
+    // Extract one typed object so surrounding prose cannot corrupt the lesson.
+    let mut draft: Draft = insi_core::first_json_object(answer)
         .map_err(|e| format!("the answer is not a lesson: {e}"))?;
     draft.avoid = draft
         .avoid
@@ -145,6 +131,26 @@ mod tests {
 
     #[test]
     fn the_answer_is_read_from_incodes_result_line() {
+        // Preambles must not replace the last Codex agent message; failed turns yield no lesson.
+        let codex = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"preamble\"}}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"answer\"}}\n{\"type\":\"turn.completed\"}";
+        assert_eq!(final_answer(codex).as_deref(), Some("answer"));
+        assert_eq!(
+            final_answer(&format!("{codex}\n{{\"type\":\"turn.failed\"}}")),
+            None
+        );
+        // Both Antigravity envelopes require SUCCESS before exposing a response.
+        for status in ["SUCCESS", "ERROR"] {
+            let envelope = format!(r#"{{"status":"{status}","response":"answer"}}"#);
+            for transcript in [
+                envelope.clone(),
+                format!(r#"{{"event":"result","result":{envelope}}}"#),
+            ] {
+                assert_eq!(
+                    final_answer(&transcript).as_deref(),
+                    (status == "SUCCESS").then_some("answer")
+                );
+            }
+        }
         let out = "{\"type\":\"init\"}\n{\"type\":\"text\",\"text\":\"thinking\"}\n\
                    {\"type\":\"result\",\"is_error\":false,\"result\":\"{\\\"issue\\\":\\\"x\\\"}\"}\n";
         assert_eq!(final_answer(out).as_deref(), Some("{\"issue\":\"x\"}"));
@@ -162,6 +168,14 @@ mod tests {
                       \"use\": \"Export helpers from src/pty.ts that tests import.\", \
                       \"avoid\": null}\n```";
         let d = parse(answer).expect("parsed");
+        // First valid typed JSON wins even with prose braces and a later JSON object.
+        for decorated in [
+            format!("before {{placeholder}} {answer} after {{anything}}"),
+            format!("{answer} {{\"issue\":\"later\"}}"),
+        ] {
+            assert_eq!(parse(&decorated).expect("lesson").use_, d.use_);
+        }
+        assert!(parse("no object").is_err());
         assert_eq!(d.use_, "Export helpers from src/pty.ts that tests import.");
         assert_eq!(d.avoid, None);
     }

@@ -29,14 +29,8 @@ pub struct Proposal {
 /// The proposal in a model's answer: its first JSON object, checked against
 /// the harness it would change.
 pub fn parse(answer: &str, incumbent: &Harness) -> Result<Proposal, String> {
-    let start = answer
-        .find('{')
-        .ok_or_else(|| "the answer has no JSON object".to_string())?;
-    let end = answer
-        .rfind('}')
-        .filter(|&e| e > start)
-        .ok_or_else(|| "the answer's JSON object is not closed".to_string())?;
-    let p: Proposal = serde_json::from_str(&answer[start..=end])
+    // Skip prose braces without swallowing later objects into this proposal.
+    let p: Proposal = insi_core::first_json_object(answer)
         .map_err(|e| format!("the answer is not a proposal: {e}"))?;
     if let Some(why) = path_problem(&p.file) {
         return Err(why);
@@ -82,6 +76,19 @@ mod tests {
 
     #[test]
     fn a_proposal_is_read_from_the_answer() {
+        // Surrounding prose and later objects must not corrupt the first valid proposal.
+        let object = r#"{"file":"prompt.md","content":"new","why":"clearer"}"#;
+        for answer in [
+            format!("before {{placeholder}} {object} after {{anything}}"),
+            format!("{object} {object}"),
+            format!("```json\n{object}\n```"),
+        ] {
+            assert_eq!(
+                parse(&answer, &incumbent()).expect("proposal").content,
+                "new"
+            );
+        }
+        assert!(parse("no object", &incumbent()).is_err());
         let p = parse(
             "Here it is:\n{\"file\": \"prompt.md\", \"content\": \"new\", \"why\": \"clearer\"}\nDone.",
             &incumbent(),
