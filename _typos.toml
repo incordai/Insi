@@ -6,3 +6,5 @@ extend-exclude = [".claude/temp/**", ".incord/**", "target/**"]
 insi = "insi"
 incode = "incode"
 incord = "incord"
+# Nmap's documented skip-host-discovery flag is -Pn, not an English word.
+Pn = "Pn"

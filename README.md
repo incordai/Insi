@@ -33,6 +33,10 @@ is that an improvement counts only if it raises the pass rate on tasks it was
 not learned from, measured against a control.
 
 - [How it works](#how-it-works)
+- [Features](#features)
+- [Languages and tested coverage](#languages-and-tested-coverage)
+- [Security and memory checks](#security-and-memory-checks)
+- [Coverage gaps](#coverage-gaps)
 - [Quick start](#quick-start)
 - [Benchmark results](#benchmark-results)
 - [Reference](#adding-insi-to-a-repository): every command in detail
@@ -44,6 +48,106 @@ not learned from, measured against a control.
 [PR review, evidence and onboarding](docs/REVIEW.md) ·
 [Incord candidate execution](docs/INCORD-CANDIDATE-API.md) ·
 [Review research and next priorities](docs/REVIEW-RESEARCH.md)
+
+## Features
+
+| Capability | What Insi provides |
+| --- | --- |
+| Repository benchmarks | Mine fix commits, validate base/fix controls, hide tests from workers, compare task × seed pairs |
+| Agent improvement | Learn lessons from verified fixes; evaluate harness changes and code suggestions against frozen benchmarks |
+| Human-reviewed changes | Issue work and accepted improvements produce draft pull requests; Insi does not merge them |
+| PR review | Configured analyzers, exact-revision summaries and inline comments, duplicate suppression and explicit incomplete results |
+| Reproduction evidence | Run the same frozen test on base/head; distinguish tool allegations from observed regressions and verified fixes |
+| Impact and review quality | Conservative test selection, full-check fallback, feedback and labeled-corpus precision/recall evaluation |
+| Agent integration | MCP lessons, edit/failure hooks, topic-scoped briefing, external context and Incord memory |
+| Worker adapters | incode, Claude, Codex and Antigravity output; sandboxed presets, pinned-model fallback and normalized token accounting |
+| Experiment controls | Time/token/cost budgets, bounded concurrency, held-out comparisons, integrity checks and per-phase records |
+| Setup and diagnostics | Stack detection, `init`, `onboard`, redacted offline `doctor`, development container and optional security-tool installation |
+
+See [review and onboarding](docs/REVIEW.md),
+[code suggestions](docs/SUGGESTIONS.md), [benchmark configuration](docs/BENCHMARKS.md)
+and [experiment assessment](docs/EXPERIMENTS.md) for commands and prerequisites.
+Incord candidate execution requires the matching local engine API; there is no
+direct-worker fallback when that integration is unavailable.
+
+## Languages and tested coverage
+
+![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
+![PHP](https://img.shields.io/badge/PHP-777BB4?logo=php&logoColor=white)
+![Go](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![Java](https://img.shields.io/badge/Java-ED8B00?logo=openjdk&logoColor=white)
+![C](https://img.shields.io/badge/C-A8B9CC?logo=c&logoColor=black)
+
+The benchmark runner can execute a repository's configured test command in other
+languages too. These icons identify the languages with checked-in security or
+memory controls; they do not mean equal coverage across languages or frameworks.
+
+| Language | Checked-in controls |
+| --- | --- |
+| Rust | Forgotten ownership and shell-command rule samples; live allocation tracking versus `Drop`; dependency audit |
+| PHP | SQL/shell rule samples; retained versus released string allocations |
+| Go | SQL rule samples; blocked goroutines versus cancellation and cleanup |
+| Python | SQL, shell and deserialization rule samples; live SQL lab; allocation retention; small IDOR, traversal and HTML controls |
+| JavaScript | SQL/HTML rule samples; event-listener retention versus removal |
+| TypeScript | SQL/HTML rule samples; no TypeScript application runtime or heap-profile claim |
+| Java | SQL rule samples; no JVM runtime or heap-profile claim |
+| C | Linux sanitizer controls for leaks, use-after-free and heap-buffer-overflow, with fixed counterparts |
+
+## Security and memory checks
+
+| Area | Implementation and limits |
+| --- | --- |
+| Source analysis | Semgrep native JSON import and local rules; findings remain tool-reported until reproduced |
+| Secrets | Gitleaks import, Trivy secret findings and existing publication redaction; matched secret values are withheld by the native import adapters |
+| Dependencies | cargo-audit and Trivy report imports; coverage depends on the configured scanner and advisory database |
+| Containers/configuration | Trivy filesystem/configuration imports; seeded Docker configuration checks |
+| Network exposure | Nmap XML importer and a local open-port control; an open port is an observation, not proof of a vulnerability |
+| SQL injection | Same probe against disposable vulnerable/fixed Python targets, plus language-specific static samples |
+| Access and input boundaries | Small positive/fixed controls for IDOR, path traversal, symlink escape and HTML escaping; not full framework or browser testing |
+| Memory and resource retention | Native leak/use-after-free/overflow controls; Rust, PHP and Python retained allocations; Go goroutines; Node listeners |
+| Isolation and evidence | Internal Docker lab networks, immutable execution images, restricted containers, resource/deadline limits, cleanup and explicit incomplete outcomes |
+
+The adapters extend existing JSON, SARIF and ESLint review inputs. They do not
+automatically install or run every scanner: execution comes from the operator's
+trusted review plan. Keep required rules and advisory snapshots outside PR control.
+
+```sh
+bash scripts/security/install.sh
+python3 scripts/ci/test_all.py
+```
+
+The installer includes Semgrep, Trivy, Gitleaks, cargo-audit, Nmap, sqlmap and
+language runtimes; macOS gets Docker CLI and Colima, and the dev container provides
+Docker-in-Docker. Start Docker before running the separate container labs.
+Missing optional tools are reported as skipped tests. The last recorded local
+run passed 28 security test methods without skips and all eight local check
+groups; the separate Linux sanitizer run accepted each fixed control and
+detected its seeded fault. This is evidence about those controls, not a coverage
+percentage for arbitrary software.
+
+See [security setup, lab commands and coverage evidence](docs/SECURITY-BENCHMARKS.md).
+
+## Coverage gaps
+
+Insi does **not** cover almost every exploit. Seeded boundary controls now exercise
+password verification, sessions/CSRF, object/method authorization, SSRF address
+pinning, text uploads and transaction replay/concurrency. A local browser canary
+and TLS handshake tests cover a reflected-HTML control and certificate validation.
+The reusable HTTP contract runner can apply declared expectations to a local
+application. These controls do not establish comprehensive application-level
+coverage: actual targets still need their identities, routes, workflows and
+expected behavior supplied. Cryptographic protocols and deployment-wide TLS
+policy remain outside these samples.
+
+Other gaps include JVM heap profiling, Rust unsafe-code/Miri coverage, dedicated
+C++/C#/Ruby application controls, independently labeled held-out security corpora,
+and live sqlmap/Metasploit comparisons. sqlmap is installable, but that alone is
+not evidence of an executed vulnerability test. Metasploit remains an optional
+lab probe. Scanner availability, a clean scan and a verified fix are different
+outcomes. Prioritize real authentication/API and SSRF/upload fixtures next.
 
 ## How it works
 

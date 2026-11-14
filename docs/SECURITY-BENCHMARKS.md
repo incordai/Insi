@@ -25,13 +25,70 @@ rules flag review obligations, not proof that attacker-controlled input reaches
 the sink. `mem::forget` may be intentional and is reported as a warning.
 
 Not yet established: arbitrary C++/C#/Ruby application coverage, JVM heap profiling,
-Rust unsafe-code/Miri coverage, browser-level DOM behavior, session/CSRF handling,
-file-upload controls, DNS-rebinding-resistant SSRF defenses, TLS deployment policy,
-cryptographic protocols, business-logic abuse and comprehensive API authorization.
+Rust unsafe-code/Miri coverage, cross-browser/framework behavior, production
+session/CSRF integration, arbitrary file-type decoding, an actual DNS-rebinding
+transport, deployment-wide TLS policy, cryptographic protocols and comprehensive
+application-specific authorization/business-logic coverage.
 These require application-specific targets and expected behavior. No finite suite
 can prove that arbitrary software or a dataset has no exploitable behavior.
 
-## Memory checks
+## Application boundary and HTTP contracts
+
+`boundary_controls.py` and `test_boundaries.py` add narrow reference policies and
+adversarial controls: salted scrypt verification before session issuance; session
+rotation, expiry and logout; session-bound CSRF and same-origin checking; host-only
+Secure/HttpOnly/SameSite cookies; object/method authorization; all-address SSRF
+filtering with a pinned numeric destination and refused redirects; randomized
+text-only uploads; finite positive money amounts, idempotent replay and concurrent
+balance updates. Password work factors are lab settings, not production guidance.
+Roles passed to the authorization helper must come from a trusted server identity.
+
+SSRF uses an injected resolver/transport: it tests decisions and pinning, not an
+actual HTTPS connector or DNS-rebinding attack. The upload helper writes text
+outside the served directory; it does not validate arbitrary image/archive formats.
+The ledger is an in-memory control, not evidence of a database transaction's isolation.
+
+`test_tls.py` performs real loopback TLS requests: a trusted issuer/hostname passes,
+unknown issuers and hostname mismatches fail. Its intentionally unverified client
+demonstrates the unsafe contrast. Temporary certificates and keys stay in ignored
+scratch storage and are removed after the test.
+
+`browser_lab.py` serves loopback-only vulnerable/fixed reflected-HTML pages. The
+visible Watchman browser triggered one local canary request on the unsafe page
+and zero on the escaped/CSP-protected page. The fixed page visibly rendered the
+payload as text. Browser execution is manually verified here, not automated by
+the ordinary unittest run. Its CSP also blocked the inspector's eval operation;
+the server-side canary count avoided weakening the policy for instrumentation.
+
+For application-specific checks, author a local HTTP contract and run:
+
+```sh
+python3 scripts/security/http_contract.py contract.json \
+  --output .incord/temp/http-security-report.json
+```
+
+```json
+{
+  "version": 1,
+  "base": "http://127.0.0.1:8080",
+  "cases": [
+    {"id":"anonymous-private-route", "path":"/private", "status":401},
+    {"id":"other-user-object", "path":"/records/bob", "status":403,
+     "headers_from_env":{"Authorization":"ALICE_TEST_AUTH"},
+     "forbids":["bob-canary"]}
+  ]
+}
+```
+
+Targets are limited to explicit loopback origins or the internal Docker alias
+`target`. Redirects are not followed, bodies have a size limit and requests have
+deadlines. Reports omit credentials and response content. Missing credentials or
+failed transports are incomplete. Assertions can check status, required/forbidden
+text and exact response headers. The same contract passed a live fixed two-user
+HTTP fixture and failed its deliberately broken ownership check. It does not
+discover routes, provision users or invent an application's authorization policy.
+
+## Memory check commands
 
 `python3 -m unittest discover -s scripts/security -p 'test_*.py'` runs Rust,
 Python, Node, PHP and Go retention controls when their runtimes are installed;
@@ -158,6 +215,15 @@ be reported separately. Research/planning behavior, arbitrary exploit modules,
 and comparative PentAGI effectiveness are not established by these tests.
 
 ## Local verification, 2026-11-14
+
+Boundary extension: 28 security unittest methods passed without skips and the
+full local runner passed 8/8 groups. This includes credential/cookie, session/CSRF,
+authorization, simulated SSRF, upload and concurrent-transfer controls; real
+loopback TLS verification; and a live HTTP contract that detects a planted
+ownership regression. Browser verification was separate: one canary hit for the
+unsafe page and zero for the fixed page, with the payload visibly rendered as
+text. Both temporary browser servers were stopped after inspection. Validation
+was performed locally before publishing this extension.
 
 Expanded verification: all 19 security unittest methods passed with no skips,
 including native Rust allocator instrumentation, PHP allocation retention, Go
