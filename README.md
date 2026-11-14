@@ -123,7 +123,7 @@ The installer includes Semgrep, Trivy, Gitleaks, cargo-audit, Nmap, sqlmap and
 language runtimes; macOS gets Docker CLI and Colima, and the dev container provides
 Docker-in-Docker. Start Docker before running the separate container labs.
 Missing optional tools are reported as skipped tests. The last recorded local
-run passed 28 security test methods without skips and all eight local check
+run passed 32 security test methods without skips and all eight local check
 groups; the separate Linux sanitizer run accepted each fixed control and
 detected its seeded fault. This is evidence about those controls, not a coverage
 percentage for arbitrary software.
@@ -147,7 +147,10 @@ C++/C#/Ruby application controls, independently labeled held-out security corpor
 and live sqlmap/Metasploit comparisons. sqlmap is installable, but that alone is
 not evidence of an executed vulnerability test. Metasploit remains an optional
 lab probe. Scanner availability, a clean scan and a verified fix are different
-outcomes. Prioritize real authentication/API and SSRF/upload fixtures next.
+outcomes. Real loopback authentication/API and SSRF/upload fixtures now compare
+vulnerable and fixed behavior, including private-canary requests and filesystem
+effects. See the [end-to-end scenarios](docs/SECURITY-BENCHMARKS.md#end-to-end-authenticationapi-ssrf-and-upload-fixtures).
+Next, apply contracts to the actual application's identity and storage systems.
 
 ## How it works
 

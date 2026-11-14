@@ -34,6 +34,40 @@ can prove that arbitrary software or a dataset has no exploitable behavior.
 
 ## Application boundary and HTTP contracts
 
+### End-to-end authentication/API, SSRF and upload fixtures
+
+Run `python3 -m unittest discover -s scripts/security -p 'test_api_fixture.py'`.
+The four scenario methods run the same real HTTP requests against deliberately
+vulnerable and fixed modes of `api_fixture.py`. All services bind only to
+loopback and use test-owned users, storage and upstreams; no external deployment
+or production credential is contacted.
+
+| Scenario | Vulnerable effect | Fixed control |
+| --- | --- | --- |
+| Authentication and sessions | Wrong password issues a usable Alice session; replay works after logout | Salted verification before issuance; logout revokes; expiry denies old credentials |
+| API authorization and CSRF | Alice reads/updates Bob's record; forged mutation requests change data | Ownership checks on read/write, session-bound proof, exact origin, legitimate own updates still work |
+| SSRF over real HTTP | Direct and redirected requests reach a separate private canary service and return its body | Exact allowed upstream, numeric connection pinning, no proxy use, no redirect following; private hit count remains zero |
+| Upload/download boundaries | Traversal writes outside the upload folder; PHP/type/size cases are accepted; Bob reads Alice's file | Random stored names, text/type/size checks, confinement and owner checks; legitimate upload/download still work |
+
+The SSRF fixture now uses an actual HTTP connector, not the earlier mocked
+transport. Public/private roles are represented by separate test-owned loopback
+origins. It demonstrates direct and redirect SSRF prevention with a strict
+origin allowlist; it does not emulate Internet DNS rebinding or a general-purpose
+HTTPS proxy. The vulnerable upload escape is itself confined to the test's parent
+scratch directory. No uploaded PHP is executed. The target uses HTTP for local
+cookie/request tests, while real certificate validation has separate TLS controls;
+it does not establish production Secure-cookie or reverse-proxy behavior.
+
+Upload probes send actual multipart file bodies with per-file names and media
+types. Fixed mode requires one non-nested file part and applies the same bounded
+text storage policy; these tests do not claim arbitrary multipart/parser-fuzz or
+archive/image decoder coverage.
+
+The ordinary security unittest discovery includes these scenarios, so existing
+local and CI commands exercise them without extra scanners, Docker or paid APIs.
+Application-specific SSO/MFA, permission models, storage backends and arbitrary
+file types still require their own contracts and deployments.
+
 `boundary_controls.py` and `test_boundaries.py` add narrow reference policies and
 adversarial controls: salted scrypt verification before session issuance; session
 rotation, expiry and logout; session-bound CSRF and same-origin checking; host-only
@@ -43,8 +77,10 @@ text-only uploads; finite positive money amounts, idempotent replay and concurre
 balance updates. Password work factors are lab settings, not production guidance.
 Roles passed to the authorization helper must come from a trusted server identity.
 
-SSRF uses an injected resolver/transport: it tests decisions and pinning, not an
-actual HTTPS connector or DNS-rebinding attack. The upload helper writes text
+The earlier `fetch_public` helper uses an injected resolver/transport: it tests
+decisions and pinning, not an actual HTTPS connector or DNS-rebinding attack.
+The end-to-end SSRF fixture above separately tests a real HTTP connector.
+The upload helper writes text
 outside the served directory; it does not validate arbitrary image/archive formats.
 The ledger is an in-memory control, not evidence of a database transaction's isolation.
 
@@ -215,6 +251,13 @@ be reported separately. Research/planning behavior, arbitrary exploit modules,
 and comparative PentAGI effectiveness are not established by these tests.
 
 ## Local verification, 2026-11-14
+
+Real API fixture extension: the full local runner passed 8/8 groups with 32
+security test methods and no skips. After switching the upload probes to actual
+multipart bodies, all four end-to-end scenario methods passed again. Effects
+were checked through issued credentials, stored records, real upstream hit counts
+and files on disk. All temporary services and storage are cleaned up by the tests.
+Validation was performed locally before publishing this extension.
 
 Boundary extension: 28 security unittest methods passed without skips and the
 full local runner passed 8/8 groups. This includes credential/cookie, session/CSRF,
