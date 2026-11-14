@@ -839,22 +839,65 @@ fn diff_of_fix(work: &Work, task: &Task, options: &[&str]) -> Result<String, Str
 pub fn reported(stdout: &str) -> Option<(Option<String>, Usage)> {
     stdout.lines().rev().find_map(|line| {
         let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-        if v["type"] != "result" {
+        // Antigravity emits a nested stream result or a standalone JSON envelope.
+        if v["event"] == "result" || v.get("status").is_some() {
+            let result = if v["event"] == "result" {
+                &v["result"]
+            } else {
+                &v
+            };
+            let u = &result["usage"];
+            let n = |k: &str| u[k].as_u64().unwrap_or(0);
+            let model = stdout.lines().find_map(|line| {
+                let init: serde_json::Value = serde_json::from_str(line).ok()?;
+                (init["event"] == "init")
+                    .then(|| init["model"].as_str().map(String::from))
+                    .flatten()
+            });
+            return Some((
+                model,
+                Usage {
+                    input: n("input_tokens"),
+                    output: n("output_tokens").saturating_add(n("thinking_tokens")),
+                    cache_creation: 0,
+                    cache_read: n("cache_read_tokens"),
+                },
+            ));
+        }
+        // Accept Codex completion events as well as incode and Claude results.
+        let codex = v["type"] == "turn.completed";
+        if v["type"] != "result" && !codex {
             return None;
         }
         let u = &v["usage"];
         let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        // Claude reports model IDs as modelUsage keys, unlike incode.
         let model = v["model"]
             .as_str()
             .filter(|m| !m.is_empty())
-            .map(String::from);
+            .map(String::from)
+            .or_else(|| v["modelUsage"].as_object()?.keys().next().cloned());
         Some((
             model,
             Usage {
-                input: n("input_tokens"),
+                // Codex cached input is already included in its input total.
+                input: n("input_tokens").saturating_sub(if codex {
+                    n("cached_input_tokens")
+                } else {
+                    0
+                }),
                 output: n("output_tokens"),
-                cache_creation: n("cache_creation_tokens"),
-                cache_read: n("cache_read_tokens"),
+                // Claude uses cache_*_input_tokens; retain incode spellings too.
+                cache_creation: u["cache_creation_input_tokens"]
+                    .as_u64()
+                    .unwrap_or_else(|| n("cache_creation_tokens")),
+                cache_read: if codex {
+                    n("cached_input_tokens")
+                } else {
+                    u["cache_read_input_tokens"]
+                        .as_u64()
+                        .unwrap_or_else(|| n("cache_read_tokens"))
+                },
             },
         ))
     })

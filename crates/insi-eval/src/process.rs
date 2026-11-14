@@ -180,11 +180,25 @@ fn kill_tree(pid: u32) {
         .stderr(Stdio::null())
         .status();
     #[cfg(unix)]
-    let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    kill_group(pid);
+}
+
+/// Kill only a valid process group directly: external kill implementations
+/// can misinterpret a negative PID as an option and signal unrelated processes.
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    unsafe extern "C" {
+        // POSIX process signalling, avoiding external command argument parsing.
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let Ok(group) = i32::try_from(pid) else {
+        return;
+    };
+    if group <= 1 {
+        return;
+    }
+    // SAFETY: kill takes integer values and accesses no Rust memory.
+    let _ = unsafe { kill(-group, 9) };
 }
 
 /// Names that tie a process to the agent session that launched Insi. Removed

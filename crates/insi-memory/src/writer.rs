@@ -64,6 +64,33 @@ restate this task's specific answer; no code blocks; each field at most two sent
 /// ends with `{"type":"result","result":"…"}`; anything else is taken as the
 /// answer itself.
 pub fn final_answer(stdout: &str) -> Option<String> {
+    // Failed machine streams must not fall back to raw text as a lesson.
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str(line.trim()).ok())
+        .collect();
+    if events
+        .iter()
+        .any(|v| v["type"] == "turn.failed" || v["type"] == "error" || v["is_error"] == true)
+    {
+        return None;
+    }
+    // Codex preambles are agent messages too: use the last completed message.
+    for v in events.iter().rev() {
+        if v["type"] == "item.completed" && v["item"]["type"] == "agent_message" {
+            return v["item"]["text"].as_str().map(String::from);
+        }
+        if v["event"] == "result" || v.get("status").is_some() {
+            let result = if v["event"] == "result" {
+                &v["result"]
+            } else {
+                v
+            };
+            return (result["status"] == "SUCCESS")
+                .then(|| result["response"].as_str().map(String::from))
+                .flatten();
+        }
+    }
     let from_result = stdout.lines().rev().find_map(|line| {
         let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
         (v["type"] == "result")
@@ -79,14 +106,8 @@ pub fn final_answer(stdout: &str) -> Option<String> {
 /// The lesson in a model's answer: the first JSON object in it, with every
 /// field present, non-empty, and short.
 pub fn parse(answer: &str) -> Result<Draft, String> {
-    let start = answer
-        .find('{')
-        .ok_or_else(|| "the answer has no JSON object".to_string())?;
-    let end = answer
-        .rfind('}')
-        .filter(|&e| e > start)
-        .ok_or_else(|| "the answer's JSON object is not closed".to_string())?;
-    let mut draft: Draft = serde_json::from_str(&answer[start..=end])
+    // Extract one typed object so surrounding prose cannot corrupt the lesson.
+    let mut draft: Draft = insi_core::first_json_object(answer)
         .map_err(|e| format!("the answer is not a lesson: {e}"))?;
     draft.avoid = draft
         .avoid

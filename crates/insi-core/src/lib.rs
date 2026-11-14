@@ -30,3 +30,34 @@ pub use lesson::{Lesson, Verification};
 pub use signature::normalize;
 pub use task::{Budget, EvalResult, Isolation, Task, Usage};
 pub use trust::Trust;
+
+/// Extract the first complete object of the requested type, ignoring braces
+/// in surrounding prose. Proposal and lesson parsers retain their own validation.
+pub fn first_json_object<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    for (start, _) in text.match_indices('{') {
+        if let Some(Ok(value)) = serde_json::Deserializer::from_str(&text[start..])
+            .into_iter::<T>()
+            .next()
+        {
+            return Ok(value);
+        }
+    }
+    Err("the answer has no valid JSON object".into())
+}
+
+/// Prose braces and fenced output must not hide the first typed object.
+#[test]
+fn json_extraction_ignores_prose_and_keeps_the_first_object() {
+    #[derive(Debug, serde::Deserialize, PartialEq)]
+    struct Answer {
+        value: u32,
+    }
+    for text in [
+        "before {placeholder} {\"value\":1} after {anything}",
+        "```json\n{\"value\":1}\n```",
+        "{\"value\":1} {\"value\":2}",
+    ] {
+        assert_eq!(first_json_object::<Answer>(text), Ok(Answer { value: 1 }));
+    }
+    assert!(first_json_object::<Answer>("no object").is_err());
+}
