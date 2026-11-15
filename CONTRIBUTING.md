@@ -36,6 +36,8 @@ Nmap, sqlmap and Docker; macOS also gets Colima. See
 Docker startup and disposable positive/fixed lab controls. Run all local checks,
 including optional installed-scanner smoke tests, with
 `python3 scripts/ci/test_all.py`.
+This includes online workflow provenance checks. Install the pinned scanner and
+reuse your existing GitHub login as described in [the runbook](docs/RUNBOOK.md).
 
 You need Rust 1.89 or newer and git. CI runs these three commands on Windows,
 macOS and Linux, and a pull request is merged only when all three pass:
@@ -76,10 +78,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo test --doc --workspace --locked
 ```
 
-Additional checks are `typos --hidden`, `zizmor --offline .github`, and
+Additional checks are `typos --hidden`, `python3 scripts/ci/workflow_security.py`, and
 `actionlint`. The zizmor scope is `.github`, not only `.github/workflows`, so
 it also audits `.github/dependabot.yml`, as CI does. Intentional project names are in `_typos.toml`. Actions
 are pinned to full commit hashes with version comments for Dependabot.
+An offline Zizmor scan skips the action-provenance audits and cannot replace
+the required online preflight.
 
 The local monitor in `.incord/watch.toml` checks optional evaluation records,
 the audit schedule configuration, and disk space. No persistent Insi server

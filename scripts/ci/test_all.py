@@ -1,4 +1,4 @@
-"""Run the repository checks locally without service credentials."""
+"""Run repository checks, including online workflow security through an existing GitHub login."""
 import pathlib
 import subprocess
 import sys
@@ -7,6 +7,8 @@ import sys
 def main():
     root = pathlib.Path(__file__).resolve().parents[2]
     commands = [
+        # Online action-pin checks must fail locally instead of being omitted until CI.
+        [sys.executable, 'scripts/ci/workflow_security.py'],
         ['cargo', 'fmt', '--check'],
         ['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'],
         ['cargo', 'test', '--workspace', '--locked'],

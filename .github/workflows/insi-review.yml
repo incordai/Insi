@@ -29,7 +29,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # Pin the released action; the Rust version is selected explicitly below.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
       - name: Validate configured execution image
@@ -69,7 +70,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # Pin the released action; the Rust version is selected explicitly below.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
       - run: cargo build -p insi --locked

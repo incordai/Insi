@@ -1,0 +1,2 @@
+# Match the exact workflow-security version in .github/workflows/ci.yml.
+zizmor==1.30.1

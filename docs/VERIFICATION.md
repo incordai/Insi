@@ -8,6 +8,7 @@
 
 From `docs/RUNBOOK.md`:
 
+- `python3 scripts/ci/workflow_security.py` (same online audits and version as CI)
 - `cargo fmt --check`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - `cargo test --workspace --locked`

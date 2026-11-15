@@ -114,6 +114,9 @@ The adapters extend existing JSON, SARIF and ESLint review inputs. They do not
 automatically install or run every scanner: execution comes from the operator's
 trusted review plan. Keep required rules and advisory snapshots outside PR control.
 
+For the online workflow audit, install the pinned free scanner and reuse your
+GitHub login as described in [the local-check runbook](docs/RUNBOOK.md).
+
 ```sh
 bash scripts/security/install.sh
 python3 scripts/ci/test_all.py
