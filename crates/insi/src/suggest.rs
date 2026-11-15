@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 use crate::issue::{Hub, NewPr};
 
 pub struct Options<'a> {
+    // Autonomous cycles supply mandatory security gates from the trusted operator plan.
+    pub security_checks: &'a [Vec<String>],
     pub repo: &'a Path,
     pub work: &'a Path,
     pub config: &'a Config,
@@ -30,16 +32,39 @@ pub struct Options<'a> {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Suggestion {
+pub(crate) struct Suggestion {
+    // Behavior tasks qualify through fail-before/pass-after acceptance rather than speed.
+    #[serde(default)]
+    goal: Goal,
+    #[serde(default)]
+    expected_behavior: String,
+    #[serde(default)]
+    acceptance: Vec<Vec<String>>,
+    // Project fit is required before a benchmark can authorize implementation.
+    justification: crate::suggest_fit::Justification,
     title: String,
     rationale: String,
+    // Numeric measurement fields apply only to performance tasks.
+    #[serde(default)]
     metric: String,
+    #[serde(default)]
     unit: String,
+    #[serde(default = "lower")]
     direction: Direction,
+    #[serde(default)]
     benchmark: Vec<String>,
     files: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     suite: Option<crate::benchmark::Plan>,
+}
+
+/// Performance retains the existing statistical gate; behavior requires independent new checks.
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Goal {
+    #[default]
+    Performance,
+    Behavior,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
@@ -176,6 +201,8 @@ fn work(
         std::fs::read_to_string(file).map_err(|e| e.to_string())?
     } else {
         let prompt="Inspect this working repository and suggest ONE optional improvement, not a bug repair. Do not edit source files or commit. Return only JSON with title, rationale, metric, unit, direction (lower or higher), benchmark (argv array), files (map of new .insi-bench/ paths to complete benchmark/test source). Create an honest representative benchmark that measures the proposed benefit and verifies equivalent behavior. It must run on unchanged current code, print a final JSON line {\"value\": positive finite number}, and run identically after the change. It must not detect branch, implementation text, agent identity or baseline/candidate role. Do not change regression tests. Runtime dependencies must already be available; do not introduce paid services.";
+        // Discovery must research the current project and justify feasibility before proposing work.
+        let prompt = format!("{prompt}\nFirst read the README, architecture, relevant source and tests. Choose work from this project's purpose and actual code constraints, not unrelated feature ideas. Include a required justification object: project_fit (purpose and architecture), feasibility (integration points, existing dependencies and bounded scope), benefit (concrete user or code benefit), verification (how checks establish the benefit), risks_and_alternatives (tradeoffs and simpler options), evidence (map of 1..8 existing relative source/doc paths to exact excerpts, each <=1000 bytes). All five explanations must be nonempty and <=4000 bytes. Evidence is checked against the committed baseline before implementation. Excerpts support your claims but are not proof of feasibility. If nothing worthwhile is justified, return only {{\"status\":\"no-change\",\"reason\":\"explain why\"}}. Do not create work just because the timer fired.");
         execute(
             o,
             &baseline,
@@ -190,7 +217,14 @@ fn work(
     // the proposer or worker; everything else untracked is a modification.
     let own = own_pathspecs(o);
     ensure_clean(&baseline, original, &own)?;
-    let mut suggestion = parse(&raw)?;
+    // Discovery may conclude there is no justified work; this is a completed cycle.
+    let Some(mut suggestion) = parse(&raw)? else {
+        save(&dir.join("discovery-decision.json"), &raw)?;
+        return Ok(kept(dir, "no worthwhile project-grounded change found"));
+    };
+    // Check cited baseline evidence before setup, benchmark installation or implementation.
+    crate::suggest_fit::check(&baseline, &suggestion.justification)?;
+    save(&dir.join("justification.json"), &suggestion.justification)?;
     if let Some(generated) = suggestion.suite.as_mut() {
         crate::benchmark::validate(generated)?;
         // The proposer must not set the bar its own change has to clear: only
@@ -248,14 +282,28 @@ fn work(
     }
     let baseline_head = git(&baseline, &["rev-parse", "HEAD"])?;
     let candidate_base = git(&candidate, &["rev-parse", "HEAD"])?;
-    execute(
-        o,
+    // Repair tasks may start with failing regressions, but timeouts and infrastructure exits are refused.
+    let wrapped = o
+        .config
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.wrap(&o.config.test_cmd, &baseline));
+    let baseline_checks = process::run(
+        wrapped.as_deref().unwrap_or(&o.config.test_cmd),
         &baseline,
-        &o.config.test_cmd,
-        dir,
-        "baseline-regressions",
-        1800,
+        Duration::from_secs(1800),
     )?;
+    save(
+        &dir.join("baseline-regressions.json"),
+        &json!({"passed":baseline_checks.success(),"code":baseline_checks.code,"timed_out":baseline_checks.timed_out,"stdout":baseline_checks.stdout,"stderr":baseline_checks.stderr}),
+    )?;
+    if !baseline_checks.success()
+        && (suggestion.goal != Goal::Behavior
+            || baseline_checks.timed_out
+            || baseline_checks.code != Some(1))
+    {
+        return Err("baseline-regressions failed or timed out".into());
+    }
     frozen(&baseline, &suggestion)?;
     ensure_clean(&baseline, &baseline_head, &own)?;
     // Establish that the benchmark runs before any implementation is requested.
@@ -265,13 +313,30 @@ fn work(
         frozen(&baseline, &suggestion)?;
         ensure_clean(&baseline, &baseline_head, &own)?;
     }
-    let initial = measure(o, &baseline, &suggestion, dir, "baseline-initial")?;
+    // Frozen acceptance must demonstrate missing behavior before a worker receives the task.
+    acceptance(o, &baseline, &suggestion, dir, false)?;
+    let initial = if suggestion.goal == Goal::Behavior {
+        0.0
+    } else {
+        measure(o, &baseline, &suggestion, dir, "baseline-initial")?
+    };
     save(
         &dir.join("baseline-initial.json"),
         &json!({"value":initial,"commit":original}),
     )?;
     git(&candidate, &["checkout", "--quiet", "-b", branch])?;
     let prompt=format!("Implement this optional improvement in this isolated checkout:\n{}\n\n{}\n\nThe existing code works. Preserve behavior and all existing tests. Add useful regression tests for your change. The frozen benchmark measures {} in {} ({:?} is better); its baseline value is {}. Do not modify .insi-bench, .insi/config.toml or .git. Do not commit, push or create a PR. If no sound improvement is possible, leave the code unchanged. Insi will independently run the frozen benchmark and configured regression checks before proposing anything.",suggestion.title,suggestion.rationale,suggestion.metric,suggestion.unit,suggestion.direction,initial);
+    // Keep implementation tied to the same recorded project justification.
+    let prompt = format!(
+        "{prompt}\n\nProject justification (stay within this scope):\n{}",
+        serde_json::to_string_pretty(&suggestion.justification).map_err(|e| e.to_string())?
+    );
+    // Functional tasks describe the expected behavior and keep their independent checks frozen.
+    let prompt = if suggestion.goal == Goal::Behavior {
+        format!("Implement this bounded behavior change: {}\n{}\nExpected behavior: {}\nJustification: {}\nPreserve existing behavior and tests. Do not edit .insi-bench, .insi/config.toml or .git; do not commit or publish. Frozen acceptance checks failed on the baseline and must pass after implementation.", suggestion.title, suggestion.rationale, suggestion.expected_behavior, serde_json::to_string(&suggestion.justification).map_err(|e| e.to_string())?)
+    } else {
+        prompt
+    };
     if let (Some(id), Some(finding)) = (o.audit_finding, &engine_finding) {
         crate::audit_bridge::implement(
             crate::audit_bridge::Engine {
@@ -325,28 +390,52 @@ fn work(
     if git(&candidate, &["rev-parse", "HEAD"])? != candidate_base {
         return Err("worker changed git history; nothing published".into());
     }
-    if std::fs::read(candidate.join(".insi/config.toml")).ok()
-        != std::fs::read(baseline.join(".insi/config.toml")).ok()
-    {
-        return Err("worker changed the regression configuration; nothing published".into());
+    // Candidate code cannot weaken the trusted regression or autonomous security policy.
+    for policy in [".insi/config.toml", ".insi/heartbeat.json"] {
+        // Reject redirected policy paths even when following the link would yield identical bytes.
+        if std::fs::symlink_metadata(candidate.join(policy))
+            .is_ok_and(|m| !m.is_file() || linked(&m))
+        {
+            return Err("worker redirected trusted policy; nothing published".into());
+        }
+        if std::fs::read(candidate.join(policy)).ok() != std::fs::read(baseline.join(policy)).ok() {
+            return Err(
+                "worker changed the regression or heartbeat configuration; nothing published"
+                    .into(),
+            );
+        }
     }
-    let mut add = vec![
-        "add".to_string(),
-        "--all".into(),
+    // Enumerate paths first: Git add treats an excluded ignored directory as an error.
+    // Listing keeps ignored agent bookkeeping out of the patch without forcing it into history.
+    let mut list = vec![
+        "git".to_string(),
+        "ls-files".into(),
+        "--modified".into(),
+        "--deleted".into(),
+        "--others".into(),
+        "--exclude-standard".into(),
+        "-z".into(),
         "--".into(),
         ".".into(),
         ":(exclude).insi-task.md".into(),
     ];
-    add.extend(
+    list.extend(
         o.worker
             .own_files
             .iter()
             .map(|p| format!(":(glob,exclude){p}")),
     );
-    git(
-        &candidate,
-        &add.iter().map(String::as_str).collect::<Vec<_>>(),
-    )?;
+    // Check guarded Git metadata before the read-only raw call; preserve pathname whitespace.
+    git(&candidate, &["status", "--porcelain"])?;
+    let paths = process::run(&list, &candidate, Duration::from_secs(30))?;
+    if !paths.success() {
+        return Err("could not enumerate candidate paths".into());
+    }
+    let mut add = vec!["add", "--all", "--"];
+    add.extend(paths.stdout.split('\0').filter(|p| !p.is_empty()));
+    if add.len() > 3 {
+        git(&candidate, &add)?;
+    }
     if git(&candidate, &["diff", "--cached", "--quiet"]).is_ok() {
         return Ok(kept(dir, "no implementation change"));
     }
@@ -368,6 +457,15 @@ fn work(
         1800,
     )?;
     ensure_clean(&candidate, &candidate_head, &own)?;
+    // Security and task checks execute after regressions, before any publication can qualify.
+    for (n, command) in o.security_checks.iter().enumerate() {
+        execute(o, &candidate, command, dir, &format!("security-{n}"), 1800)?;
+        frozen(&candidate, &suggestion)?;
+        ensure_clean(&candidate, &candidate_head, &own)?;
+    }
+    acceptance(o, &candidate, &suggestion, dir, true)?;
+    frozen(&candidate, &suggestion)?;
+    ensure_clean(&candidate, &candidate_head, &own)?;
     let mut suite_evidence = None;
     if let Some(plan) = &suite {
         let evidence = crate::benchmark::compare(plan, &baseline, &candidate, o.config, dir)?;
@@ -381,40 +479,52 @@ fn work(
         }
         suite_evidence = Some(evidence);
     }
-    let mut before = Vec::new();
-    let mut after = Vec::new();
-    for n in 0..o.samples {
-        // Alternate order to reduce timing drift. Every observation is retained.
-        let b = format!("baseline-{n}");
-        let c = format!("candidate-{n}");
-        let (bv, cv) = if n % 2 == 0 {
-            (
-                measure(o, &baseline, &suggestion, dir, &b)?,
-                measure(o, &candidate, &suggestion, dir, &c)?,
-            )
-        } else {
-            let cv = measure(o, &candidate, &suggestion, dir, &c)?;
-            (measure(o, &baseline, &suggestion, dir, &b)?, cv)
-        };
-        before.push(bv);
-        after.push(cv);
-        save(
-            &dir.join("samples.json"),
-            &json!({"baseline":before,"candidate":after}),
-        )?;
-        frozen(&baseline, &suggestion)?;
-        frozen(&candidate, &suggestion)?;
-        ensure_clean(&baseline, &baseline_head, &own)?;
-        ensure_clean(&candidate, &candidate_head, &own)?;
-    }
-    let evidence = compare(before, after, suggestion.direction, o.margin);
-    save(&dir.join("benchmark.json"), &evidence)?;
-    if !evidence.improved {
-        return Ok(
-            json!({"status":"kept","reason":"benchmark gain did not clear margin and uncertainty checks","benchmark":evidence,"evidence":dir}),
-        );
-    }
-    let body=format!("{}\n\nSuggested by Insi as an optional improvement to working code. Review before merging; nothing is merged automatically.\n\nBenchmark: **{}** ({}; {:?} is better). {} paired samples, alternating execution order. Mean relative gain {:.2}%; descriptive 95% bootstrap interval [{:.2}%, {:.2}%], one-sided paired sign-test p={:.6}. Required relative gain {:.2}%.\n\nBaseline commit: `{}`. Baseline and candidate regression command passed: `{}`. Frozen benchmark and raw values are included in `.insi-bench/evidence.json`.\n\nThis measures this benchmark workload, not generalization to unseen repositories. Repeated benchmark samples are not independent tasks. Producer and benchmark validity still require review.",suggestion.rationale,suggestion.metric,suggestion.unit,suggestion.direction,o.samples,evidence.mean_relative_gain*100.0,evidence.interval_95.0*100.0,evidence.interval_95.1*100.0,evidence.sign_test_p,o.margin*100.0,original,o.config.test_cmd.join(" "));
+    // Functional evidence is a controlled behavior difference, not a fabricated performance gain.
+    let (evidence, body) = if suggestion.goal == Goal::Behavior {
+        let evidence = json!({"kind":"behavior", "improved":true, "baseline_acceptance":false, "candidate_acceptance":true, "baseline_regressions_passed":baseline_checks.success(), "checks":suggestion.acceptance, "security_checks":o.security_checks});
+        let body = format!("{}\n\n{}\n\nExpected behavior: {}\n\nFrozen acceptance checks exited 1 on baseline `{original}` and passed on the candidate. Configured regressions and {} trusted security checks passed. Review the justification, checks and implementation before merging. Evidence is in `.insi-bench/evidence.json`. No automatic merge.", suggestion.title, suggestion.rationale, suggestion.expected_behavior, o.security_checks.len());
+        save(&dir.join("acceptance.json"), &evidence)?;
+        (evidence, body)
+    } else {
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        for n in 0..o.samples {
+            // Alternate order to reduce timing drift. Every observation is retained.
+            let b = format!("baseline-{n}");
+            let c = format!("candidate-{n}");
+            let (bv, cv) = if n % 2 == 0 {
+                (
+                    measure(o, &baseline, &suggestion, dir, &b)?,
+                    measure(o, &candidate, &suggestion, dir, &c)?,
+                )
+            } else {
+                let cv = measure(o, &candidate, &suggestion, dir, &c)?;
+                (measure(o, &baseline, &suggestion, dir, &b)?, cv)
+            };
+            before.push(bv);
+            after.push(cv);
+            save(
+                &dir.join("samples.json"),
+                &json!({"baseline":before,"candidate":after}),
+            )?;
+            frozen(&baseline, &suggestion)?;
+            frozen(&candidate, &suggestion)?;
+            ensure_clean(&baseline, &baseline_head, &own)?;
+            ensure_clean(&candidate, &candidate_head, &own)?;
+        }
+        let evidence = compare(before, after, suggestion.direction, o.margin);
+        save(&dir.join("benchmark.json"), &evidence)?;
+        if !evidence.improved {
+            return Ok(
+                json!({"status":"kept","reason":"benchmark gain did not clear margin and uncertainty checks","benchmark":evidence,"evidence":dir}),
+            );
+        }
+        let body=format!("{}\n\nSuggested by Insi as an optional improvement to working code. Review before merging; nothing is merged automatically.\n\nBenchmark: **{}** ({}; {:?} is better). {} paired samples, alternating execution order. Mean relative gain {:.2}%; descriptive 95% bootstrap interval [{:.2}%, {:.2}%], one-sided paired sign-test p={:.6}. Required relative gain {:.2}%.\n\nBaseline commit: `{}`. Baseline and candidate regression command passed: `{}`. Frozen benchmark and raw values are included in `.insi-bench/evidence.json`.\n\nThis measures this benchmark workload, not generalization to unseen repositories. Repeated benchmark samples are not independent tasks. Producer and benchmark validity still require review.",suggestion.rationale,suggestion.metric,suggestion.unit,suggestion.direction,o.samples,evidence.mean_relative_gain*100.0,evidence.interval_95.0*100.0,evidence.interval_95.1*100.0,evidence.sign_test_p,o.margin*100.0,original,o.config.test_cmd.join(" "));
+        (
+            serde_json::to_value(evidence).map_err(|e| e.to_string())?,
+            body,
+        )
+    };
     if std::fs::symlink_metadata(candidate.join(".insi-bench/evidence.json"))
         .is_ok_and(|m| !m.is_file() || linked(&m))
     {
@@ -422,7 +532,8 @@ fn work(
     }
     save(
         &candidate.join(".insi-bench/evidence.json"),
-        &json!({"baseline_commit":original,"candidate_commit":candidate_head,"suggestion":suggestion,"benchmark":evidence,"regression_command":o.config.test_cmd,"required_relative_margin":o.margin,"samples":o.samples}),
+        // Retain the trusted security commands alongside both functional and numeric evidence.
+        &json!({"baseline_commit":original,"candidate_commit":candidate_head,"suggestion":suggestion,"benchmark":evidence,"regression_command":o.config.test_cmd,"security_checks":o.security_checks,"required_relative_margin":o.margin,"samples":o.samples}),
     )?;
     if let Some(evidence) = &suite_evidence {
         let path = suite_path.replace("-suite.json", "-suite-results.json");
@@ -510,6 +621,12 @@ fn work(
     Ok(json!({"status":"draft-pr","url":url,"branch":branch,"benchmark":evidence,"evidence":dir}))
 }
 
+/// Default metric direction keeps older performance proposals compatible.
+fn lower() -> Direction {
+    Direction::Lower
+}
+
+/// Preserve local evidence for a proposal that does not qualify.
 fn kept(dir: &Path, why: &str) -> Value {
     json!({"status":"kept","reason":why,"evidence":dir})
 }
@@ -522,6 +639,51 @@ fn save(path: &Path, value: &impl Serialize) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// Acceptance is frozen before work: exit 1 proves baseline failure; only exit 0 qualifies a candidate.
+fn acceptance(
+    o: &Options,
+    tree: &Path,
+    s: &Suggestion,
+    dir: &Path,
+    candidate: bool,
+) -> Result<(), String> {
+    if s.goal != Goal::Behavior {
+        return Ok(());
+    }
+    for (n, command) in s.acceptance.iter().enumerate() {
+        let wrapped = o
+            .config
+            .sandbox
+            .as_ref()
+            .map(|sandbox| sandbox.wrap(command, tree));
+        let out = process::run(
+            wrapped.as_deref().unwrap_or(command),
+            tree,
+            Duration::from_secs(1800),
+        )?;
+        save(
+            &dir.join(format!(
+                "acceptance-{}-{n}.json",
+                if candidate { "candidate" } else { "baseline" }
+            )),
+            &json!({"command":command,"code":out.code,"timed_out":out.timed_out,"stdout":out.stdout,"stderr":out.stderr}),
+        )?;
+        if out.timed_out || out.code != Some(if candidate { 0 } else { 1 }) {
+            return Err(format!(
+                "acceptance check {n} did not {}",
+                if candidate {
+                    "pass on candidate"
+                } else {
+                    "fail with exit 1 on baseline"
+                }
+            ));
+        }
+        frozen(tree, s)?;
+    }
+    Ok(())
+}
+
+/// Run a configured or frozen command with the project's sandbox and retained logs.
 fn execute(
     o: &Options,
     tree: &Path,
@@ -618,7 +780,7 @@ thread_local! {
 /// Records `tree`'s `.git` as trusted; from now on every [`git`] call in it
 /// first checks that nothing changed there. Called by `work` right after each
 /// clone is configured, before any untrusted command runs in it.
-fn guard_clone(tree: &Path) -> Result<(), String> {
+pub(crate) fn guard_clone(tree: &Path) -> Result<(), String> {
     let files = git_files(tree)?;
     GUARDED.with(|g| g.borrow_mut().insert(tree.to_path_buf(), files));
     Ok(())
@@ -666,7 +828,7 @@ fn own_pathspecs(o: &Options) -> Vec<String> {
 /// files matter because discovery, setup and measurement could otherwise leave
 /// files in one tree only and make the baseline and candidate asymmetric.
 /// Called by `work` after every step that runs untrusted commands; calls `git`.
-fn ensure_clean(tree: &Path, head: &str, own: &[String]) -> Result<(), String> {
+pub(crate) fn ensure_clean(tree: &Path, head: &str, own: &[String]) -> Result<(), String> {
     let mut status = vec!["status", "--porcelain", "--untracked-files=all", "--", "."];
     status.extend(own.iter().map(String::as_str));
     if git(tree, &["rev-parse", "HEAD"])? != head
@@ -738,7 +900,7 @@ pub(crate) fn sign_tail(wins: usize, losses: usize) -> f64 {
     sum.min(1.0)
 }
 
-fn parse(raw: &str) -> Result<Suggestion, String> {
+pub(crate) fn parse(raw: &str) -> Result<Option<Suggestion>, String> {
     let value = insi_memory::writer::final_answer(raw);
     let text = match value {
         Some(v) => v,
@@ -746,18 +908,31 @@ fn parse(raw: &str) -> Result<Suggestion, String> {
     };
     let start = text.find('{').ok_or("suggestion has no JSON")?;
     let end = text.rfind('}').ok_or("suggestion has no JSON end")?;
+    // A deliberate no-change decision is valid only with an explicit bounded reason.
+    let decision: Value = serde_json::from_str(&text[start..=end]).map_err(|e| e.to_string())?;
+    if decision["status"] == "no-change" {
+        if decision.as_object().is_none_or(|v| v.len() != 2)
+            || decision["reason"]
+                .as_str()
+                .is_none_or(|s| s.trim().is_empty() || s.len() > 4000)
+        {
+            return Err("no-change needs only status and a nonempty reason (<=4000 bytes)".into());
+        }
+        return Ok(None);
+    }
     let s: Suggestion =
         serde_json::from_str(&text[start..=end]).map_err(|e| format!("invalid suggestion: {e}"))?;
     if s.title.trim().is_empty()
         || s.title.len() > 200
         || s.rationale.trim().is_empty()
         || s.rationale.len() > 4000
-        || s.metric.trim().is_empty()
-        || s.unit.trim().is_empty()
-        || s.benchmark.is_empty()
-        || s.benchmark[0].is_empty()
+        || (s.goal == Goal::Performance
+            && (s.metric.trim().is_empty()
+                || s.unit.trim().is_empty()
+                || s.benchmark.is_empty()
+                || s.benchmark[0].is_empty()
+                || !s.benchmark.iter().any(|arg| s.files.contains_key(arg))))
         || s.files.is_empty()
-        || !s.benchmark.iter().any(|arg| s.files.contains_key(arg))
         || s.files.values().map(String::len).sum::<usize>() > 1024 * 1024
     {
         return Err("suggestion needs title, rationale, metric, unit, benchmark argv and benchmark source (<=1MiB)".into());
@@ -773,7 +948,23 @@ fn parse(raw: &str) -> Result<Suggestion, String> {
             return Err("benchmark files must be new relative .insi-bench/ paths; evidence.json is reserved".into());
         }
     }
-    Ok(s)
+    // Behavior tasks need bounded executable checks linked to new frozen test sources.
+    if s.goal == Goal::Behavior
+        && (s.expected_behavior.trim().is_empty()
+            || s.expected_behavior.len() > 4000
+            || s.acceptance.is_empty()
+            || s.acceptance.len() > 8
+            || s.acceptance.iter().any(|cmd| {
+                cmd.is_empty()
+                    || cmd[0].is_empty()
+                    || !cmd.iter().any(|arg| s.files.contains_key(arg))
+            }))
+    {
+        return Err("behavior suggestion needs expected_behavior and 1..8 acceptance argv checks using frozen files".into());
+    }
+    // Reasoning must be present even for operator-supplied suggestions.
+    crate::suggest_fit::validate(&s.justification)?;
+    Ok(Some(s))
 }
 
 fn install_benchmark(tree: &Path, s: &Suggestion) -> Result<(), String> {
@@ -932,7 +1123,9 @@ mod tests {
     }
 
     fn proposal() -> Value {
+        // Ground the test proposal in its fixture's committed baseline.
         json!({"title":"Reduce work per operation","rationale":"Preserve behavior with fewer operations",
+            "justification":{"project_fit":"Optimize the existing operation", "feasibility":"Existing worker and tools suffice", "benefit":"Fewer operations per result", "verification":"Frozen benchmark and existing regression check", "risks_and_alternatives":"Preserve the slow path if behavior changes", "evidence":{"code.txt":"slow"}},
             "metric":"operations","unit":"operations per result","direction":"lower",
             "benchmark":["sh",".insi-bench/bench.sh"],
             "files":{".insi-bench/bench.sh":"case \"$(cat code.txt)\" in slow) echo '{\"value\":100}';; fast) echo '{\"value\":80}';; *) echo '{\"value\":120}';; esac\n"}})
@@ -1081,7 +1274,11 @@ mod tests {
             }
             fn create_pr(&self, _: &Path, pr: &NewPr) -> Result<String, String> {
                 assert!(pr.draft);
-                assert!(pr.body.contains("paired samples"));
+                // Numeric and functional proposals must each describe their own evidence type.
+                assert!(
+                    pr.body.contains("paired samples")
+                        || pr.body.contains("Frozen acceptance checks")
+                );
                 self.0.borrow_mut().push(NewPr {
                     head: pr.head.clone(),
                     base: pr.base.clone(),
@@ -1127,7 +1324,8 @@ mod tests {
             .unwrap();
             git(&repo, &["push", "--quiet", "origin", "main"]).unwrap();
             let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
-            let worker = Worker::command(vec![
+            // Some integration cases exercise ignored bookkeeping declared by a worker adapter.
+            let mut worker = Worker::command(vec![
                 "sh".into(),
                 "-c".into(),
                 script.into(),
@@ -1143,6 +1341,14 @@ mod tests {
             };
             let mut p = proposal();
             mutate(&mut p);
+            // Remove fixture-only switches before strict proposal parsing.
+            if p.as_object_mut()
+                .unwrap()
+                .remove("test_own_files")
+                .is_some()
+            {
+                worker.own_files = vec![".agent-state/**".into()];
+            }
             let suite_test = p.as_object_mut().unwrap().remove("test_suite").is_some();
             let suite_regression = p
                 .as_object_mut()
@@ -1211,6 +1417,8 @@ mod tests {
             let hosting = Hosting(RefCell::new(Vec::new()));
             let work = root.join("work");
             let options = Options {
+                // Existing suggestion fixtures do not claim autonomous security coverage.
+                security_checks: &[],
                 repo: &repo,
                 work: &work,
                 config: &config,
@@ -1291,11 +1499,73 @@ mod tests {
             (result, count)
         }
 
+        /// Unsupported feasibility claims must stop before the implementation worker can run.
+        #[test]
+        fn ungrounded_proposals_never_reach_implementation() {
+            for evidence in [
+                json!({"missing.rs":"invented"}),
+                json!({"code.txt":"invented"}),
+                json!({"../code.txt":"slow"}),
+            ] {
+                let (result, count) = fixture("echo implementation-ran; exit 99", |p| {
+                    p["justification"]["evidence"] = evidence;
+                });
+                assert_eq!(result["status"], "failed");
+                assert!(result["reason"].as_str().unwrap().contains("justification"));
+                assert!(!result["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("implementation"));
+                assert_eq!(count, 0);
+            }
+            let (result, count) = fixture("exit 99", |p| {
+                p.as_object_mut().unwrap().remove("justification");
+            });
+            assert_eq!(result["status"], "failed");
+            assert_eq!(count, 0);
+        }
+
+        /// A research decision to do nothing completes normally without invoking implementation.
+        #[test]
+        fn discovery_can_decline_unjustified_work() {
+            let (result, count) = fixture("exit 99", |p| {
+                *p = json!({"status":"no-change", "reason":"No useful change fits this project", "test_discovery":true});
+            });
+            assert_eq!(result["status"], "kept");
+            assert_eq!(count, 0);
+        }
+
         #[test]
         fn a_measured_gain_publishes_only_a_draft_with_evidence() {
             let (v, n) = fixture("echo fast > code.txt", |_| {});
             assert_eq!(v["status"], "draft-pr", "{v}");
             assert_eq!(n, 1);
+        }
+
+        /// Functional evidence follows the same real local push and draft-PR path as numeric work.
+        #[test]
+        fn behavior_controls_qualify_a_draft_without_claiming_statistical_gain() {
+            let (result, count) = fixture("echo fast > code.txt", |p| {
+                p["goal"] = json!("behavior");
+                p["expected_behavior"] = json!("The operation supports the new fast result");
+                p["acceptance"] = json!([["sh", ".insi-bench/accept.sh"]]);
+                p["files"][".insi-bench/accept.sh"] = json!("test \"$(cat code.txt)\" = fast\n");
+            });
+            assert_eq!(result["status"], "draft-pr", "{result}");
+            assert_eq!(result["benchmark"]["kind"], "behavior");
+            assert_eq!(result["benchmark"]["candidate_acceptance"], true);
+            assert!(result["benchmark"].get("mean_relative_gain").is_none());
+            assert_eq!(count, 1);
+        }
+
+        /// Ignored adapter state must neither break staging nor enter a qualified patch.
+        #[test]
+        fn ignored_adapter_state_does_not_prevent_delivery() {
+            let (result, count) = fixture("mkdir -p .agent-state; echo session > .agent-state/state; echo .agent-state/ > .gitignore; echo fast > code.txt", |p| {
+                p["test_own_files"] = json!(true);
+            });
+            assert_eq!(result["status"], "draft-pr", "{result}");
+            assert_eq!(count, 1);
         }
 
         #[test]

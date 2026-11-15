@@ -1,5 +1,8 @@
 # Improvements to working code
 
+Use [the heartbeat scheduler](HEARTBEAT.md) for repeated discovery and evaluation
+at a configurable interval.
+
 ```sh
 insi improve --code --repo . --samples 10 --margin 0.05
 # Equivalent:
@@ -19,6 +22,21 @@ All execution uses the configured sandbox when present. Clones isolate Git
 checkouts, but do not restrict host access without a sandbox.
 
 ## Execution
+
+Discovery first reads the project's README, architecture, relevant source and
+tests. Each proposal must include a `justification`: project fit, feasibility,
+concrete benefit, verification, risks and simpler alternatives. Each explanation
+must contain 1..4000 bytes. Its `evidence` map cites 1..8 existing committed files
+with exact excerpts of 1..1000 bytes. Missing reasoning, unsafe paths, nonexistent
+files and mismatched excerpts prevent implementation. This applies to supplied
+JSON as well as generated proposals; older suggestion files need the new field.
+The justification is saved before implementation and included in the worker's
+scope and final evidence. These checks verify the cited text exists; reviewers
+still assess whether the reasoning establishes feasibility and project value.
+
+Discovery may return `{"status":"no-change","reason":"why no useful change fits"}`
+instead. Insi records that decision and skips implementation, benchmarks and
+publication. A heartbeat is an opportunity to investigate, not a quota for changes.
 
 1. Create independent baseline and candidate clones under
    `<work>/suggestions/<run>/` at the current branch's commit.
@@ -83,6 +101,14 @@ that command invokes no worker and publishes no PR. See the
 {
   "title": "Reduce allocations in the parser",
   "rationale": "Reuse the existing buffer while preserving parsed output.",
+  "justification": {
+    "project_fit": "Explain how this serves the project's documented purpose.",
+    "feasibility": "Name integration points, available dependencies and bounded scope.",
+    "benefit": "Describe a concrete benefit for this project's users or code.",
+    "verification": "Explain how the benchmark and tests establish that benefit.",
+    "risks_and_alternatives": "Describe tradeoffs and simpler alternatives.",
+    "evidence": {"README.md": "An exact excerpt from the committed README"}
+  },
   "metric": "parser latency on representative inputs",
   "unit": "seconds",
   "direction": "lower",

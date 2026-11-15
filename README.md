@@ -689,6 +689,10 @@ To suggest improvements to **working application code**, run
 the baseline, implements in isolated clones, and opens a draft PR only for
 a measured gain with passing regressions. Use `--local` to keep qualifying
 results local. See [code improvement suggestions](docs/SUGGESTIONS.md).
+Use `insi heartbeat --interval-secs 3600` to repeat discovery and evaluation
+on a timer. Each proposal needs a project-fit and feasibility justification
+grounded in committed code; discovery can decline to make a change.
+See [heartbeat scheduling and recovery](docs/HEARTBEAT.md).
 
 For controlled component comparisons on recorded runs, use
 `insi experiment --plan experiment.json`. It checks matched tasks and seeds,

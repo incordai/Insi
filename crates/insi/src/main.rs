@@ -39,11 +39,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod audit_bridge;
+mod autonomous;
 mod benchmark;
 mod context;
 mod doctor;
 mod experiment;
 mod harness_pr;
+mod heartbeat;
 mod hook;
 mod improve;
 mod init;
@@ -56,6 +58,7 @@ mod review_evidence;
 mod review_quality;
 mod review_security;
 mod suggest;
+mod suggest_fit;
 mod suggest_memory;
 mod watch_templates;
 
@@ -68,7 +71,11 @@ use insi_eval::store::{self, Store};
 use insi_memory::briefing;
 use insi_memory::store::{FileLessons, LessonStore};
 
+// Include heartbeat scheduling, trusted policy, backlog inspection and recovery in CLI help.
 const USAGE: &str = "usage:
+  insi heartbeat [--repo <dir>] [--interval-secs N] [--once] [--max-cycles N]
+                 [--status | --queue] [--plan <trusted-json>] [--offline]
+                 [--reset-failures] [--publish] [suggest options]
   insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
   insi watch-init [--repo <dir>]
   insi init     [--repo <dir>] [--check \"<cmd {tests}>\"] [--setup \"<cmd>\"] [--force]
@@ -414,6 +421,7 @@ fn command_by_name(
         "improve" if flags.has("code") => suggest_cmd(flags, work),
         "improve" => improve_cmd(flags, work, results),
         "suggest" => suggest_cmd(flags, work),
+        "heartbeat" => heartbeat::run(flags),
         "mcp" => {
             // stdout is the protocol from here on: nothing else may print.
             let lessons = lessons_file(flags, work);
@@ -722,6 +730,8 @@ fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
         None
     };
     let options = suggest::Options {
+        // Direct suggestions retain configured regressions; autonomous cycles add security gates.
+        security_checks: &[],
         repo: &repo,
         work: &work.root,
         config: &config,
