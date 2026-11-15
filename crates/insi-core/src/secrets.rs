@@ -277,27 +277,84 @@ pub fn scan_diff(diff: &str) -> Vec<Finding> {
     let mut found = Vec::new();
     let mut file = String::new();
     let mut new_line = 0usize;
+    let mut hunk = None;
     for line in diff.lines() {
-        if let Some(path) = line.strip_prefix("+++ ") {
-            file = path.strip_prefix("b/").unwrap_or(path).to_string();
-            if file != "/dev/null" {
-                if let Some(what) = credential_file(&file) {
-                    found.push(Finding {
-                        file: file.clone(),
-                        line: 0,
-                        what,
+        // Inside a hunk, prefixes belong to content, even `+++ ` and `--- `.
+        // Count both sides so the next file's headers become metadata again.
+        let mut hunk_content = false;
+        if let Some((old, new)) = hunk.as_mut() {
+            match line.as_bytes().first() {
+                Some(b'+') if *new > 0 => {
+                    *new -= 1;
+                    hunk_content = true;
+                }
+                Some(b'-') if *old > 0 => {
+                    *old -= 1;
+                    continue;
+                }
+                Some(b' ') if *old > 0 && *new > 0 => {
+                    *old -= 1;
+                    *new -= 1;
+                    new_line += 1;
+                    continue;
+                }
+                Some(b'\\') => continue, // No newline at end of file.
+                _ => hunk = None,
+            }
+        }
+        if !hunk_content {
+            if let Some(path) = line.strip_prefix("+++ ") {
+                file = path.strip_prefix("b/").unwrap_or(path).to_string();
+                if file != "/dev/null" {
+                    if let Some(what) = credential_file(&file) {
+                        found.push(Finding {
+                            file: file.clone(),
+                            line: 0,
+                            what,
+                        });
+                    }
+                }
+            } else if line.starts_with("--- ") || line.starts_with("diff --git") {
+            } else if let Some(rest) = line.strip_prefix("@@ ") {
+                let range = |s: &str| -> Option<(usize, usize)> {
+                    let (start, count) = s.split_once(',').unwrap_or((s, "1"));
+                    Some((start.parse().ok()?, count.parse().ok()?))
+                };
+                let mut parts = rest.split_whitespace();
+                hunk = parts
+                    .next()
+                    .and_then(|s| s.strip_prefix('-'))
+                    .and_then(range)
+                    .zip(
+                        parts
+                            .next()
+                            .and_then(|s| s.strip_prefix('+'))
+                            .and_then(range),
+                    )
+                    .filter(|_| parts.next() == Some("@@"))
+                    .map(|((_, old), (start, new))| {
+                        new_line = start;
+                        (old, new)
                     });
+                if hunk.is_none() {
+                    new_line = rest
+                        .split_whitespace()
+                        .find_map(|p| p.strip_prefix('+'))
+                        .and_then(|s| s.split(',').next())
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0);
                 }
             }
-        } else if line.starts_with("--- ") || line.starts_with("diff --git") {
-        } else if let Some(rest) = line.strip_prefix("@@ ") {
-            new_line = rest
-                .split_whitespace()
-                .find_map(|p| p.strip_prefix('+'))
-                .and_then(|s| s.split(',').next())
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0);
-        } else if let Some(added) = line.strip_prefix('+') {
+            // Only additions and context affect the new-file line number below.
+            if line.starts_with("+++ ")
+                || line.starts_with("--- ")
+                || line.starts_with("diff --git")
+                || line.starts_with("@@ ")
+            {
+                continue;
+            }
+        }
+        if let Some(added) = line.strip_prefix('+') {
             if let Some(what) = shape_in(added).or_else(|| pii_in(added)) {
                 found.push(Finding {
                     file: file.clone(),
@@ -410,6 +467,39 @@ mod tests {
         ] {
             assert_eq!(pii_in(line), None, "{line}");
         }
+    }
+
+    #[test]
+    fn header_like_content_keeps_file_and_line_attribution() {
+        let token = fake("ghp_", 30);
+        let diff = format!(
+            "--- a/original.txt\n+++ b/original.txt\n@@ -4,2 +4,4 @@\n context\n--- {token}\n+++ b/{token}\n+ordinary\n+{token}\n\\ No newline at end of file\n\
+             @@ -10,0 +13 @@\n+++ b/{token}\n\
+             --- a/next.txt\n+++ b/next.txt\n@@ -1 +1 @@\n-{token}\n+safe\n\
+             --- /dev/null\n+++ b/.env\n@@ -0,0 +1 @@\n+MODE=dev\n"
+        );
+        let found = scan_diff(&diff);
+        let shown: Vec<_> = found.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            shown,
+            [
+                "original.txt:5: a GitHub token",
+                "original.txt:7: a GitHub token",
+                "original.txt:13: a GitHub token",
+                ".env: an environment file",
+            ]
+        );
+        assert!(!format!("{found:?} {shown:?}").contains(&token));
+    }
+
+    #[test]
+    fn standalone_review_additions_are_scanned() {
+        let token = fake("sk-", 30);
+        let found = scan_diff(&format!("+ safe\n+ ++ {token}\n+ {token}\n"));
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|f| f.file.is_empty()));
+        assert_eq!(found[0].line, 1);
+        assert_eq!(found[1].line, 2);
     }
 
     #[test]

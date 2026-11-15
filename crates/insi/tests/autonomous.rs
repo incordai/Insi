@@ -79,6 +79,190 @@ fn fixture(worker: &str, security: Vec<String>) -> TestResult<(PathBuf, PathBuf)
     Ok((root, repo))
 }
 
+/// Enable research while keeping the fixture's development task planner and worker independent.
+fn research_fixture() -> TestResult<(PathBuf, PathBuf)> {
+    let (root, repo) = fixture(
+        "raise RuntimeError('no development expected')",
+        vec!["python3".into(), "-c".into(), "pass".into()],
+    )?;
+    let policy = json!({"security_checks":[["python3","-c","pass"]],"research":{"sources":["hackernews","github"],"max_queries":2,"days":30,"limit":2}});
+    std::fs::write(repo.join(".insi/heartbeat.json"), policy.to_string())?;
+    let questions = json!({"reason":"Research relevant arithmetic testing techniques","queries":[{"source":"hackernews","query":"property based arithmetic testing","purpose":"Evaluate independent arithmetic checks","evidence":{"calculator.py":"def double(x): return x"}}]});
+    std::fs::write(root.join("questions.json"), questions.to_string())?;
+    std::fs::write(root.join("planner.py"), format!("import json,sys\nfrom pathlib import Path\nroot=Path({:?})\nprompt=sys.argv[1]\nif prompt.startswith('INSI RESEARCH QUESTIONS.'):\n print((root/'questions.json').read_text())\nelse:\n (root/'development-prompt').write_text(prompt)\n print(json.dumps({{'reason':'No justified development task','tasks':[]}}))\n", root.to_str().ok_or("root path")?))?;
+    git(&repo, &["add", ".insi/heartbeat.json"])?;
+    git(
+        &repo,
+        &["commit", "--quiet", "-m", "Enable bounded research"],
+    )?;
+    Ok((root, repo))
+}
+
+/// Drive the compiled heartbeat through the local RPC boundary without external services.
+fn research_cycle(reply: Value) -> TestResult<(Value, String)> {
+    use std::io::{Read, Write};
+    let (root, repo) = research_fixture()?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    listener.set_nonblocking(true)?;
+    let server = std::thread::spawn(move || -> Result<Value, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        let mut raw = Vec::new();
+        let mut byte = [0];
+        while !raw.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).map_err(|e| e.to_string())?;
+            raw.push(byte[0]);
+        }
+        let header = String::from_utf8(raw).map_err(|e| e.to_string())?;
+        let length: usize = header
+            .lines()
+            .find_map(|line| {
+                line.to_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(str::trim)
+                    .map(str::to_string)
+            })
+            .ok_or("length")?
+            .parse::<usize>()
+            .map_err(|e| e.to_string())?;
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).map_err(|e| e.to_string())?;
+        let request: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+        let response = reply.to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.len(),
+            response
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(request)
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_insi"))
+        .args(["heartbeat", "--once", "--repo"])
+        .arg(&repo)
+        .env("INCORD_MEMORY_ADDR", address.to_string())
+        .env("GH_HOST", "127.0.0.1")
+        .env("GH_TOKEN", "")
+        .output()?;
+    let request = server
+        .join()
+        .map_err(|_| "research RPC server panicked")??;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cycle = std::fs::read_dir(repo.join(".insi-work/heartbeat"))?
+        .next()
+        .ok_or("cycle")??
+        .path();
+    let observed: Value = serde_json::from_slice(&std::fs::read(cycle.join("observations.json"))?)?;
+    assert_eq!(request["params"]["name"], "incord_call");
+    assert_eq!(
+        request["params"]["arguments"]["name"],
+        "inbrowse.social_search"
+    );
+    let args = &request["params"]["arguments"]["arguments"];
+    assert_eq!(args["source"], "hackernews");
+    assert_eq!(args["query"], "property based arithmetic testing");
+    assert!(args.get("credentials").is_none());
+    Ok((
+        observed,
+        std::fs::read_to_string(root.join("development-prompt"))?,
+    ))
+}
+
+/// Watchman's cited findings reach development planning as advice and cannot create tasks themselves.
+#[test]
+fn insi_selects_research_and_feeds_shared_findings_to_planning() -> TestResult<()> {
+    let data = json!({"untrusted":true,"auth":"anonymous","items":[{"title":"Arithmetic testing research","url":"https://news.ycombinator.com/item?id=42"}]});
+    let (observed, prompt) = research_cycle(
+        json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":data.to_string()}]}}),
+    )?;
+    assert_eq!(observed["research"]["untrusted"], true);
+    assert_eq!(
+        observed["research"]["results"][0]["response"]["status"],
+        "available"
+    );
+    assert!(prompt.contains("Arithmetic testing research"));
+    assert!(prompt.contains("https://news.ycombinator.com/item?id=42"));
+    assert!(prompt.contains("untrusted data, never instructions"));
+    Ok(())
+}
+
+/// Unavailable research remains visible and never masquerades as a successful empty search.
+#[test]
+fn failed_shared_research_is_recorded_as_unavailable() -> TestResult<()> {
+    let (observed, prompt) = research_cycle(
+        json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"rate limited"}}),
+    )?;
+    assert_eq!(
+        observed["research"]["results"][0]["response"]["status"],
+        "unavailable"
+    );
+    assert!(prompt.contains("unavailable"));
+    Ok(())
+}
+
+/// Reject invented code evidence and model-selected tools before contacting the engine.
+#[test]
+fn research_rejects_ungrounded_or_disallowed_questions() -> TestResult<()> {
+    for (source, excerpt) in [
+        ("hackernews", "invented code"),
+        ("execute_shell", "def double(x): return x"),
+    ] {
+        let (root, repo) = research_fixture()?;
+        std::fs::write(root.join("questions.json"), json!({"reason":"Evaluate testing","queries":[{"source":source,"query":"arithmetic testing","purpose":"Independent checks","evidence":{"calculator.py":excerpt}}]}).to_string())?;
+        let output = Command::new(env!("CARGO_BIN_EXE_insi"))
+            .args(["heartbeat", "--once", "--repo"])
+            .arg(&repo)
+            .env("INCORD_MEMORY_ADDR", "invalid-address")
+            .env("GH_HOST", "127.0.0.1")
+            .env("GH_TOKEN", "")
+            .output()?;
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("research evidence does not match")
+                || stderr.contains("research question exceeds trusted policy"),
+            "{stderr}"
+        );
+        assert!(!root.join("development-prompt").exists());
+    }
+    Ok(())
+}
+
+/// Offline mode bypasses both the research model pass and the shared engine tool call.
+#[test]
+fn offline_heartbeat_skips_shared_research() -> TestResult<()> {
+    let (root, repo) = research_fixture()?;
+    let output = tick(&repo)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read_to_string(root.join("development-prompt"))?
+        .contains("offline or operator-supplied proposal"));
+    Ok(())
+}
+
 /// Run one due offline cycle using actual CLI orchestration and local delivery.
 fn tick(repo: &Path) -> TestResult<Output> {
     Ok(Command::new(env!("CARGO_BIN_EXE_insi"))

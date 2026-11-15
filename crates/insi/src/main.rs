@@ -53,6 +53,8 @@ mod issue;
 mod learn;
 mod mcp;
 mod onboard;
+// Research delegates evidence gathering to the shared Watchman tools.
+mod research;
 mod review;
 mod review_evidence;
 mod review_quality;

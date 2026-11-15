@@ -16,6 +16,9 @@ struct Plan {
     observation_checks: Vec<Vec<String>>,
     #[serde(default = "batch_size")]
     max_tasks: usize,
+    // Research stays opt-in under the operator's trusted policy.
+    #[serde(default)]
+    research: Option<crate::research::Policy>,
 }
 
 /// Keep each model planning batch small and bounded.
@@ -98,6 +101,10 @@ fn plan(path: &Path) -> Result<Plan, String> {
             "heartbeat plan needs 1..16 security checks, <=16 observations and max_tasks 1..10"
                 .into(),
         );
+    }
+    // Validate research limits before executing the configured planner.
+    if let Some(research) = &p.research {
+        crate::research::validate(research)?;
     }
     Ok(p)
 }
@@ -362,10 +369,48 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
             ),
         )
     };
-    let observations = json!({"baseline":baseline,"checks":checks,"project_context":context,"issues":issues,"ci":ci});
+    // Append shared research evidence before the development planner ranks tasks.
+    let mut observations = json!({"baseline":baseline,"checks":checks,"project_context":context,"issues":issues,"ci":ci});
     save(&dir.join("observations.json"), &observations)?;
     suggest::ensure_clean(&tree, &baseline, &own)?;
     if select(&queue, &baseline).is_none() {
+        // Insi chooses questions only for fresh planning, avoiding repeated research for queued tasks.
+        if let Some(research) = &policy.research {
+            let evidence = if flags.has("offline") || flags.has("suggestion") {
+                json!({"status":"skipped","reason":"offline or operator-supplied proposal"})
+            } else {
+                let prompt = crate::research::prompt(research, &summary(&observations));
+                std::fs::write(dir.join("research-prompt.txt"), &prompt)
+                    .map_err(|e| e.to_string())?;
+                let output = command(
+                    &config,
+                    &tree,
+                    &proposer.render_in(&prompt, &tree)?,
+                    seconds,
+                )?;
+                save(&dir.join("research-planner.json"), &output)?;
+                suggest::ensure_clean(&tree, &baseline, &own)?;
+                if output["passed"] != true {
+                    return Err("heartbeat research planner failed or timed out".into());
+                }
+                crate::research::gather(
+                    research,
+                    output["stdout"].as_str().unwrap_or_default(),
+                    &tree,
+                    |name, arguments| {
+                        let addr = insi_memory::incord::address()?;
+                        insi_memory::incord::tool_call(
+                            addr,
+                            "incord_call",
+                            json!({"name":name,"arguments":arguments}),
+                        )
+                    },
+                )?
+            };
+            save(&dir.join("research.json"), &evidence)?;
+            observations["research"] = evidence;
+            save(&dir.join("observations.json"), &observations)?;
+        }
         // An operator-supplied proposal enters the same durable queue and evaluation gates.
         let proposed = if let Some(file) = flags.get("suggestion") {
             let proposal: Value =

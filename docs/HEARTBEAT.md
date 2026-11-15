@@ -2,6 +2,7 @@
 
 - scheduling: run a development cycle on a timer
 - operation: state, recovery and limits
+- research: Insi chooses questions, Watchman gathers evidence
 - verification: tested paths and evidence limits
 
 ## scheduling
@@ -21,7 +22,7 @@ This command does not install a service or wake a sleeping computer.
 
 Each cycle observes configured tests, project documents and connectors, recent
 GitHub CI results and open issues. Remote data is untrusted advice; unavailable
-remote sources are recorded explicitly. `--offline` skips GitHub reads (configured
+remote sources are recorded explicitly. `--offline` skips GitHub reads and shared research (configured
 connectors retain their own behavior). Commands run in an isolated observation
 checkout under the configured sandbox. Failed observations are retained as input
 for planning rather than silently discarded.
@@ -99,6 +100,48 @@ work. It does not automatically retrain the harness or merge results. New module
 must fit project requirements and pass independent frozen acceptance, regressions
 and security checks; passing the existing suite alone does not qualify them.
 
+## research
+
+Insi owns research decisions. Watchman provides shared research tools, rather
+than a separate agenda or task queue. To enable the connection, add this optional
+field to the trusted heartbeat plan:
+
+```json
+"research": {
+  "sources": ["github", "hackernews"],
+  "max_queries": 2,
+  "days": 30,
+  "limit": 3
+}
+```
+
+Before planning fresh development tasks, Insi's configured proposer inspects the
+project and observations, then selects questions, sources and project-specific
+purposes. It may decide no research is needed. Every question must cite exact
+excerpts from committed source or documentation. Insi validates the entire batch
+before any search runs, then calls Watchman's existing `inbrowse.social_search`
+through the local Incord engine. Only GitHub and Hacker News searches are enabled
+by this adapter; the other paper/model/package APIs are not connected here.
+The operator permits sources; Insi chooses among them. Limits are 1..3 questions,
+1..5 results per question, and a 1..365 day window. No credentials or paid API
+keys are supplied by Insi. Search terms must use public technical vocabulary,
+not private code, secrets or logs.
+
+The existing local engine and Inbrowse plugin must be running and enabled.
+`INCORD_MEMORY_ADDR` selects a loopback engine address (default
+`127.0.0.1:9180`). Each shared tool call uses the existing bounded memory adapter
+deadline. No extra research service or model dependency is installed; question
+selection uses the configured proposer and its existing access limits.
+
+Research runs only when there is no pending task for the current baseline.
+`--offline` and operator-supplied `--suggestion` skip it. Questions, planner
+output and findings are saved as `research-prompt.txt`, `research-planner.json`
+and `research.json` beside `observations.json`. The development planner receives
+the findings, citations and explicit unavailable statuses as untrusted evidence.
+Invalid question batches stop planning; unavailable searches are recorded and
+allow planning from local evidence. Research cannot change trusted commands,
+create queue entries directly, or bypass code justification and frozen tests.
+
 ## verification
 
 `cargo test -p insi --test autonomous --test heartbeat` exercises compiled CLI
@@ -106,6 +149,9 @@ observation, ranking, successive task delivery, deduplication, interrupted tasks
 baseline/candidate acceptance, security rejection, scheduling and locking.
 Remote observation uses a deterministic `gh` adapter in these tests. Draft PR
 delivery is tested against a local bare Git remote with a hosting adapter.
+Research tests exercise the compiled CLI with a local RPC server: Insi selects
+questions, findings reach task planning, engine errors stay visible, offline
+mode skips research, and invented evidence or disallowed sources stop planning.
 
 Failure tests deliberately inject worker crashes, timeouts, incorrect behavior,
 regressions, frozen-test edits, failed security checks and invalid security
