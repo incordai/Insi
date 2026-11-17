@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub const DIR: &str = ".insi";
 /// The config file inside it.
 pub const FILE: &str = "config.toml";
+/// A config file kept outside the checkout, read instead of `<repo>/.insi/config.toml` ([`Config::load`]).
+pub const CONFIG_ENV: &str = "INSI_CONFIG";
 /// What a worker command must contain: where the task's prompt goes.
 pub const PROMPT: &str = "{prompt}";
 
@@ -562,12 +564,21 @@ pub const ARGV_PROMPT_MAX: usize = 24_000;
 pub const TASK_FILE: &str = ".insi-task.md";
 
 impl Config {
-    /// Read `<repo>/.insi/config.toml`; a repo without one has the defaults.
+    /// Read `<repo>/.insi/config.toml`; a repo without one has the defaults. When [`CONFIG_ENV`] names a
+    /// file, that file is read instead ([`Config::load_from`]).
     pub fn load(repo: &Path) -> Result<Config, String> {
-        let path = repo.join(DIR).join(FILE);
+        let named = std::env::var_os(CONFIG_ENV).filter(|v| !v.is_empty());
+        Self::load_from(repo, named.as_deref().map(Path::new))
+    }
+
+    /// The config for `repo`: the `named` file when given (an operator keeping Insi's settings OUTSIDE the
+    /// checkout, e.g. the Incord engine running Insi on a project it must not write into; it must exist), else
+    /// `<repo>/.insi/config.toml`, else the defaults.
+    pub fn load_from(repo: &Path, named: Option<&Path>) -> Result<Config, String> {
+        let path = named.map_or_else(|| repo.join(DIR).join(FILE), Path::to_path_buf);
         match std::fs::read_to_string(&path) {
             Ok(text) => Self::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && named.is_none() => Ok(Config::default()),
             Err(e) => Err(format!("could not read {}: {e}", path.display())),
         }
     }
@@ -687,6 +698,26 @@ mod tests {
 
         let why = Config::parse("tset_cmd = [\"x\"]").expect_err("misspelt");
         assert!(why.contains("tset_cmd"), "{why}");
+    }
+
+    /// **A CONFIG KEPT OUTSIDE THE CHECKOUT WINS, AND MUST EXIST.** An operator that may not write into the
+    /// project (the Incord engine) names its own file; the repo's `.insi/config.toml` is then not read. A named
+    /// file that is missing is an error, never the defaults; with none named, the repo's file or the defaults.
+    #[test]
+    fn a_named_config_outside_the_checkout_is_read_instead_and_must_exist() {
+        let root = std::env::temp_dir().join(format!("insi-config-{}", std::process::id()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(DIR)).expect("repo");
+        std::fs::write(repo.join(DIR).join(FILE), "test_cmd = [\"repo-tests\"]\n").expect("repo config");
+        let outside = root.join("engine-insi.toml");
+        std::fs::write(&outside, "test_cmd = [\"engine-tests\"]\n").expect("outside config");
+
+        assert_eq!(Config::load_from(&repo, Some(&outside)).expect("named").test_cmd, ["engine-tests"]);
+        assert_eq!(Config::load_from(&repo, None).expect("repo").test_cmd, ["repo-tests"]);
+        let missing = Config::load_from(&repo, Some(&root.join("gone.toml"))).expect_err("missing named file");
+        assert!(missing.contains("gone.toml"), "{missing}");
+        assert!(Config::load_from(&root.join("bare"), None).expect("defaults").test_cmd.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **A CONNECTOR'S ITEMS ARE UNTRUSTED UNLESS THE CONFIG SAYS OTHERWISE.**
