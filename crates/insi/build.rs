@@ -46,5 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
+    // Windows: Insi's icon (three gray blades) and its name in Task Manager. embed_resource does nothing elsewhere.
+    println!("cargo:rerun-if-changed=assets/insi.rc");
+    println!("cargo:rerun-if-changed=assets/insi.ico");
+    embed_resource::compile("assets/insi.rc", embed_resource::NONE)
+        .manifest_optional()
+        .map_err(|e| format!("Insi's Windows resources did not compile: {e}"))?;
     Ok(())
 }

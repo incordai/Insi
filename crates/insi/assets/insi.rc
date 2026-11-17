@@ -1,0 +1,26 @@
+// Insi as Windows names it: the Incord wheel with three gray blades (the owner, 2026-11-17; Inmem has one gray
+// blade, Inbrowse two). Task Manager and Explorer show a program by its FileDescription and icon, so those carry
+// the name; the file is `insi.exe`. Compiled by build.rs on Windows only.
+#include <winver.h>
+
+1 ICON "insi.ico"
+
+1 VERSIONINFO
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "CompanyName", "Incord AI"
+      VALUE "FileDescription", "Insi"
+      VALUE "ProductName", "Insi"
+      VALUE "InternalName", "Insi"
+      VALUE "OriginalFilename", "insi.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
