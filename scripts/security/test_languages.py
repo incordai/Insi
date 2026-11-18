@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Positive and fixed static-analysis controls; not runtime exploit coverage claims."""
 import json
 import os

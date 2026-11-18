@@ -138,5 +138,6 @@ Releases are cut by maintainers; see [RELEASING.md](RELEASING.md).
 ## License
 
 By contributing, you agree that your contributions are licensed under the
-[Apache License, Version 2.0](LICENSE), the license of the project (section 5
-of the license).
+[Business Source License 1.1](LICENSE), the license of the project, and that
+they become available under its Change License on the Change Date, as the rest
+of the Licensed Work does.

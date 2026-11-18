@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! The audit trail: every state change of the loop, one JSON line each,
 //! appended and never rewritten.
 //!

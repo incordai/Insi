@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Running a command with a deadline, its output drained while it runs.
 //!
 //! Output is read on its own threads WHILE the process runs: a child that

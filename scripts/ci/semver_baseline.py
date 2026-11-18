@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Find an existing crates.io baseline; only 404/no stable release may skip."""
 import argparse
 import json

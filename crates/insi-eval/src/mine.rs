@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Tasks from history: every fix commit that changed source and a separate
 //! test file.
 //!

@@ -99,6 +99,8 @@ jobs:
       # Portable controls run everywhere; missing optional runtimes/scanners are explicit skips.
       - run: python -m unittest discover -s scripts/security -p 'test_*.py'
       - run: node packaging/npm/test.js
+      # Every own Python, JavaScript and shell file carries the license header (Rust files: cargo test).
+      - run: node scripts/license-headers.mjs --check
 
   artifacts:
     name: artifact round trip

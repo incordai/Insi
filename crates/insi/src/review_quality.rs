@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Human judgments and held-out review evaluation. Durable feedback goes to Incord.
 use serde::Deserialize;
 use serde_json::{json, Value};

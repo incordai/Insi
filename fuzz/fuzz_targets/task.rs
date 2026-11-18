@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 #![no_main]
 libfuzzer_sys::fuzz_target!(|text: &str| {
     let _ = insi_core::Config::parse(text);

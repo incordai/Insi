@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Pristine setup snapshots, published before workers or checks run.
 //! Attempts receive private copies and never return worker-exposed output.
 

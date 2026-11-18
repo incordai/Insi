@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `insi learn`: lessons from failed attempts whose fix is verified.
 //!
 //! A failed worker attempt on a FAIR task (its reference commit passed the

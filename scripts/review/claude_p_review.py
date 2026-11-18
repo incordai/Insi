@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Model reviewer for `insi review`: sends the diff to `claude -p` and prints
 Insi's normalized findings JSON:
   {"findings":[{"file","line","rule","message","severity"}]}

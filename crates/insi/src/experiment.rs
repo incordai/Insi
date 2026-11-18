@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Offline, conservative assessment of recorded component experiments.
 //! No agent, shell command, or memory store is started here.
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! One attempt at one task, in a throwaway worktree.
 //!
 //! The tree comes from Insi's OWN clone of the task's source, under the

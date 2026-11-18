@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `insi mcp`: Insi's lessons for any agent, over MCP on stdin/stdout.
 //!
 //! The read side only. An agent asks; nothing it sends can write a lesson,

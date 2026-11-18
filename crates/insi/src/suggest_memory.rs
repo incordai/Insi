@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Optional delivery to the existing Incord engine; run evidence stays in Insi.
 use std::{net::SocketAddr, path::Path};
 

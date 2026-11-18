@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Shared Inmem watch starter: additive, no scheduler and no automatic tool installation.
 use std::io::Write;
 use std::path::Path;

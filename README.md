@@ -962,5 +962,7 @@ never in a public issue. Everyone taking part follows the
 
 ## License
 
-Insi is released under the [Apache License 2.0](LICENSE), copyright 2026
-Incord AI. See [NOTICE](NOTICE).
+Insi is released under the [Business Source License 1.1](LICENSE), copyright
+2026 Incord AI: free for your own personal and internal business use, and it
+becomes Apache License 2.0 on the Change Date named in the license. See
+[NOTICE](NOTICE).

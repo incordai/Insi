@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Suggest, benchmark, then propose code changes. The operator's tree is read only.
 // RefCell and PathBuf hold the guarded clones' trusted .git contents; the
 // shared git helper is no longer imported because this module's own `git`

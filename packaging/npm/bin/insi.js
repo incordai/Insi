@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 // Runs the insi binary installed beside this file, with the same arguments,
 // streams and exit code.
 

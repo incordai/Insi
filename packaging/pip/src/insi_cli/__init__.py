@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Run the insi binary for this platform, fetching it once on first use.
 
 A wheel cannot run code when it is installed, so the binary comes on the

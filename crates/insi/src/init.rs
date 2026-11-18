@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `insi init`: make a repository ready for Insi.
 //!
 //! Looks at the files at the repository's root to tell how it is installed

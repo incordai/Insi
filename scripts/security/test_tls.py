@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Real TLS handshake controls: trusted host, unknown issuer and hostname mismatch."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path

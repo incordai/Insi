@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! At most N attempts at once.
 //!
 //! An attempt spends most of its time waiting on a child process (installing

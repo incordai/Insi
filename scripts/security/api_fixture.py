@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Disposable authentication/API/upload target with intentionally vulnerable and fixed modes.
 
 Bind only to loopback. SSRF probes may contact only the test-owned upstreams.

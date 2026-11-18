@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Require a bounded, code-grounded justification before implementation starts.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Project-defined workloads with reusable measurement and comparison rules.
 use insi_core::Config;
 use insi_eval::process;

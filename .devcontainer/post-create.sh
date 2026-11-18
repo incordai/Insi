@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 # Prepares a dev container or Codespace to run the checks in CONTRIBUTING.md:
 # the three CI commands, the Rust 1.89 MSRV check and the Python/Node
 # packaging tests. Callers: devcontainer.json (postCreateCommand).

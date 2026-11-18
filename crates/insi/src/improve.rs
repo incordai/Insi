@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `insi improve`: the improvement loop over a harness.
 //!
 //! The harness is a folder of prompts and settings a worker runs with; its

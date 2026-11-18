@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Run the same frozen reproduction against baseline and reviewed commit.
 use insi_core::Config;
 use serde::{Deserialize, Serialize};

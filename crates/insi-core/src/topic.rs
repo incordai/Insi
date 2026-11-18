@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Topics: where a lesson applies, resolved by rules, never by a model.
 //!
 //! A topic is a `/`-separated path, broadest first: `shop` → `shop/api` →

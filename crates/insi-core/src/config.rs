@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `.insi/config.toml` — how one repository is checked and worked on.
 //!
 //! Every key is optional except where a command needs it; an unknown key is

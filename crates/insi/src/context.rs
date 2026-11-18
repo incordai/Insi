@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `insi context` and the MCP tool `insi_context`: a repository's outside
 //! sources, for one topic.
 //!

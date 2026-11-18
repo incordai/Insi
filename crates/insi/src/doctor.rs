@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Offline bug-report diagnostics, dispatched before Work can start cleanup.
 //! Only git's version command is executed. Worker/configured commands are
 //! inspected as files, never run; arbitrary config strings are never emitted.

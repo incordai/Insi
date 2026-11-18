@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 #![allow(
     clippy::expect_used,
     reason = "property failures must retain the shrinking input"

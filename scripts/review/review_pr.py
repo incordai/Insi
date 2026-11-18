@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Review open pull requests with Insi and the local `claude -p` login.
 
   review_pr.py 47            review PR 47, print the findings, post nothing

@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Sanitizer evidence must distinguish a detected bug from a generic tool failure."""
 import subprocess
 import unittest

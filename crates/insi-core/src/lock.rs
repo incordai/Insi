@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Mutual exclusion across processes, for files two `insi` runs may share.
 //!
 //! Two runs can share a work folder — a validation and an eval at the same

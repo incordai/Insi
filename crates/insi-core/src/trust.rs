@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! How far a piece of outside text is believed.
 //!
 //! Every item a connector returns carries one. Only what the repository's own

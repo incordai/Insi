@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 // Listener retention is a runtime resource leak, independent of GC timing and RSS noise.
 const { EventEmitter } = require('node:events');
 const emitter = new EventEmitter();

@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Delegate candidate edits to Incord's existing approval/coder path. No local fallback.
 use insi_memory::incord::{http, http_wait};
 use serde_json::{json, Value};

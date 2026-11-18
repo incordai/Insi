@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Where tasks, hidden tests and results live on disk.
 //!
 //! - `<tasks>/<id>.toml` — the public part of each task.

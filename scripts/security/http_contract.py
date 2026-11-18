@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Run operator-authored HTTP security assertions against an explicit local app.
 
 Headers may reference environment variables so credentials never enter reports.

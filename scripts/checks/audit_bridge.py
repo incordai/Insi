@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Verify that denied candidate approval never reaches edit execution."""
 from pathlib import Path
 import subprocess

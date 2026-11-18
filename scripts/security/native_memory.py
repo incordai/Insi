@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Require sanitizers to detect leaking/corrupt builds and accept equivalent fixed builds."""
 import argparse
 import json

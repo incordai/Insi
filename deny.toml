@@ -13,7 +13,17 @@ allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
 confidence-threshold = 0.93
 # libFuzzer's bundled compiler runtime also carries the permissive NCSA
 # license. This reviewed exception is confined to the development harness.
-exceptions = [{ crate = "libfuzzer-sys@0.4.13", allow = ["MIT", "Apache-2.0", "NCSA"] }]
+# Insi's own crates are under the Business Source License 1.1 (LICENSE): allowed for them by name, never for a dependency.
+exceptions = [
+    { crate = "libfuzzer-sys@0.4.13", allow = ["MIT", "Apache-2.0", "NCSA"] },
+    { crate = "insi", allow = ["BUSL-1.1"] },
+    { crate = "insi-core", allow = ["BUSL-1.1"] },
+    { crate = "insi-eval", allow = ["BUSL-1.1"] },
+    { crate = "insi-memory", allow = ["BUSL-1.1"] },
+    { crate = "insi-loop", allow = ["BUSL-1.1"] },
+    { crate = "insi-connectors", allow = ["BUSL-1.1"] },
+    { crate = "insi-fuzz", allow = ["BUSL-1.1"] },
+]
 
 [bans]
 multiple-versions = "warn"
@@ -23,4 +33,5 @@ wildcards = "deny"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# Our own sandbox library (crates/insi/Cargo.toml `incord-sandbox`), pinned to a commit in the workspace manifest.
+allow-git = ["https://github.com/incordai/Incode"]

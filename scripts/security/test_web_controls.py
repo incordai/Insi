@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Executable positive/fixed controls for common access and input boundaries.
 
 These are deliberately small Python controls, not a whole-application OWASP audit.

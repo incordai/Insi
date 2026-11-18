@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! The repository's own documentation: trusted, one item per section.
 //!
 //! Markdown files at the paths named (by default `README.md` and `docs/`),

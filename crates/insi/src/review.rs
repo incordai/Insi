@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Evidence-first local/PR reviews. Tools come only from the operator's plan.
 use crate::issue::GhCli;
 use insi_core::Config;

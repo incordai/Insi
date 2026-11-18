@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """A reusable HTTP contract must catch a planted authorization regression in a live server."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os

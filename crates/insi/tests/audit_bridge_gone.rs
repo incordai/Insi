@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `insi suggest --audit-finding` and `--retry-audit` are refused before anything runs: the Incord engine removed the
 //! candidate routes they called (2026-11-17); the engine runs Insi through `insi heartbeat` instead.
 

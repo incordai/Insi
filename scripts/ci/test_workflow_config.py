@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Regression checks for the CI configuration that CI itself depends on.
 
 Plain text checks, so they need no YAML library in the setup-python job.

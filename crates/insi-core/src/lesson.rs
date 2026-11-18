@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! A lesson: what a verified fix taught, in a form the next task can use.
 //!
 //! A lesson is written only after its fix is verified, never at the moment of

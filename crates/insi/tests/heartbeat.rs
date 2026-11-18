@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Exercise the compiled scheduler without invoking a model or network service.
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

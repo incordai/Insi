@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! A stand-in memory engine for the tests of the app hub (`issue.rs` `AppHub`, `harness_pr.rs`): a local server that
 //! answers each `tools/call` of `POST /v1/memory/mcp` by the tool's name, through a function the test gives, and
 //! remembers every call. No network beyond this machine; stopped when dropped.

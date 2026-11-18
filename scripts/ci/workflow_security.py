@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Run the same online workflow audit as CI; missing tools or authentication are failures."""
 import os
 from pathlib import Path

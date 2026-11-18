@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Scheduled interpreter selection must not weaken or hide security test failures."""
 import os
 from pathlib import Path

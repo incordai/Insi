@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Native security scanner imports. Findings remain allegations until reproduced.
 //! No scanner is installed or invoked here; trusted review plans own execution.
 

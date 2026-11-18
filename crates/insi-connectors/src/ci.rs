@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Failed CI runs: GitHub Actions, through the `gh` CLI, which holds the
 //! login.
 //!

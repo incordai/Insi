@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Insi chooses questions; the Incord engine's shared `research` tool returns untrusted evidence. It is the same
 //! research every agent and Watchman use (the owner, 2026-11-17), so Insi reads every public source it serves.
 use serde::Deserialize;

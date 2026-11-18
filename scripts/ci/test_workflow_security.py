@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """The local workflow gate must not silently downgrade or skip CI's online checks."""
 import contextlib
 import io

@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Persistent scheduling around the existing gated suggestion cycle.
 use crate::Flags;
 use serde::{Deserialize, Serialize};

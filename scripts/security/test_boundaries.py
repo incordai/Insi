@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Adversarial boundary cases with ordinary accepted controls and explicit unsafe contrasts."""
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal

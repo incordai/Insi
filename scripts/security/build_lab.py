@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Build identical vulnerable/fixed SQL controls from a preloaded immutable Python base."""
 import argparse
 import json

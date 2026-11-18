@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Credential and personal-data shapes in what is about to be pushed.
 //!
 //! Before Insi pushes a branch or opens a pull request, the lines the branch

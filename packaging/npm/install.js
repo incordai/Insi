@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 // postinstall: download this platform's insi binary, check it against the
 // digest pinned in checksums.json, and put it in bin/.
 //

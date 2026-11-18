@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 # Install the security tool list in a dev container or on macOS; never run a scan.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"

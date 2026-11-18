@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Observe, rank, select and deliver one independently evaluated task per heartbeat.
 use crate::{suggest, Flags};
 use insi_core::config::{Config, Worker};

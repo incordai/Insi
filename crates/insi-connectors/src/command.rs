@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! A source read by running a command that prints one JSON object per
 //! line — an error tracker's export, a mailbox's, anything with a CLI:
 //!

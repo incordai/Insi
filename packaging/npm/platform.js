@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 // Which release archive this machine needs, and how it is checked.
 //
 // The archive for a release is `insi-v<version>-<target>.tar.gz` on the

@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! A lesson from one failed attempt and its verified fix.
 //!
 //! The model is shown the task, what the worker changed, how the check failed,

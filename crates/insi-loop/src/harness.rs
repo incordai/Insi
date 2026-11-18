@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! A harness: the folder of prompts and settings a worker runs with.
 //!
 //! Held as its text files by repository-relative path, so two harnesses

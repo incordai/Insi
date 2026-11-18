@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Select an installed scrypt-capable Python for scheduled security tests.
 
 Watchman/Inmem can have a different PATH from the interactive terminal. Never

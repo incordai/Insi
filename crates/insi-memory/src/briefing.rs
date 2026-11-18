@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! The text put in front of a task: what earlier work taught.
 //!
 //! Only lessons learned strictly BEFORE the task, never from the task

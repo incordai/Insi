@@ -1,3 +1,8 @@
+// Copyright (c) 2026-2027 Incord Ai.
+// https://incord.ai
+//
+// SPDX-License-Identifier: BUSL-1.1
+
 //! `insi sandbox run [-q] [--best-effort] (-w PATH | --deny-read PATH)... -- PROGRAM [ARGS...]`: the worker's
 //! sandbox, built into Insi. It is the incord-sandbox library (github.com/incordai/Incode, crates/sandbox), the same
 //! sandbox as that repository's `insbx` binary, taking the same flags, so nothing else is installed for it (the owner,

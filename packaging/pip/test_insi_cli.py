@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """The wrapper's checks, offline: a local folder stands in for the release.
 
 Run: python test_insi_cli.py   (standard library only)

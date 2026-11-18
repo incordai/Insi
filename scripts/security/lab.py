@@ -1,3 +1,8 @@
+# Copyright (c) 2026-2027 Incord Ai.
+# https://incord.ai
+#
+# SPDX-License-Identifier: BUSL-1.1
+
 """Run trusted security probes against disposable targets on an internal Docker network.
 
 Images must be preloaded and digest-pinned. A probe returns 0 for a demonstrated
