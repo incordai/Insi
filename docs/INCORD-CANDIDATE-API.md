@@ -1,4 +1,9 @@
-# Delegating an improvement candidate to Incord
+# Delegating an improvement candidate to Incord (removed)
+
+> **Removed 2026-11-17.** The Incord engine no longer serves the candidate routes below, and `insi suggest`
+> refuses `--audit-finding` and `--retry-audit` before anything runs. The engine fixes audit findings with the
+> project's own agent and runs Insi through `insi heartbeat` (see [Incord integration](INCORD-INTEGRATION.md)).
+> This page is kept as the record of what the API was.
 
 ```sh
 insi improve --code --repo . --suggestion improvement.json --audit-finding <id> --benchmarks benchmarks.json --to-memory --local

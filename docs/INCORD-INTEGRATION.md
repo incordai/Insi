@@ -8,12 +8,16 @@ the existing local memory adapter; do not build another knowledge graph.
 `insi suggest --to-memory` / `insi improve --code --to-memory` opt into the
 connection. Without the flag, the workflow remains offline from memory.
 
-`--to-memory` is a data connection. The separate opt-in `--audit-finding <id>`
-mode delegates candidate edits to the engine's auditor/coder and existing
-owner/proxy approval path. It requires the new service-side
-[candidate API](INCORD-CANDIDATE-API.md) to be deployed; this work changed service
-source but did not restart the running engine. A stored memory decision grants
-no approval. Standalone mode still uses Insi's configured worker.
+`--to-memory` is a data connection. A stored memory decision grants no approval.
+Standalone mode uses Insi's configured worker.
+
+The Incord engine runs Insi itself, in the projects whose auditor is on, nightly
+or on demand, through `insi heartbeat` with its config kept outside the checkout
+(`INSI_CONFIG`). The former `--audit-finding <id>` and `--retry-audit` options,
+which handed one audit finding to the engine's coder through its
+[candidate API](INCORD-CANDIDATE-API.md), are removed (2026-11-17): the engine
+fixes audit findings with the project's own agent, and `insi suggest` refuses
+those options before anything runs.
 
 ## Auditor, fixer and proxy: candidate adapter
 

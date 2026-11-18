@@ -46,7 +46,7 @@ not learned from, measured against a control.
 [Testing and outstanding work](docs/TESTING-AUDIT.md)
 
 [PR review, evidence and onboarding](docs/REVIEW.md) ·
-[Incord candidate execution](docs/INCORD-CANDIDATE-API.md) ·
+[Incord candidate execution (removed)](docs/INCORD-CANDIDATE-API.md) ·
 [Review research and next priorities](docs/REVIEW-RESEARCH.md)
 
 ## Features

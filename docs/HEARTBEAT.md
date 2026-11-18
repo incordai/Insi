@@ -38,8 +38,8 @@ acceptance checks, project fit and feasibility justification, isolated
 implementation, regression checks, security checks and measured acceptance. Suggestion
 options including `--worker`, `--benchmarks`, `--suggestion` and `--to-memory`
 apply. Existing workers and sandbox settings are reused, with no new paid service.
-Direct `suggest --audit-finding` execution is a separate engine workflow;
-heartbeat rejects that option rather than silently bypassing its approval path.
+The former `suggest --audit-finding` option is removed (the engine fixes audit
+findings with the project's own agent); heartbeat rejects it as unsupported.
 Results stay local unless `--publish` allows qualified draft PRs. No automatic
 merge occurs. Explicit `--local` still takes precedence over `--publish`.
 

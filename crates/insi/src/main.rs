@@ -110,7 +110,6 @@ const USAGE: &str = "usage:
   insi suggest  [--repo <dir>] [--suggestion <json>] [--worker \"<cmd {prompt}>\"]
                 [--proposer \"<cmd {prompt}>\"] [--samples N] [--margin F] [--local] [--to-memory]
                 [--benchmarks <suite-json>] (additional required project workloads)
-                [--audit-finding <id>] (delegate edits to Incord's approved candidate executor)
                 (suggest a code improvement, freeze its benchmark, compare isolated checkouts;
                 open a draft PR only for a measured gain with passing regression checks)
   insi improve --code [same options as suggest]
@@ -692,7 +691,15 @@ fn init_cmd(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+/// Why `--audit-finding` and `--retry-audit` are refused: the Incord engine removed the candidate routes they called
+/// (2026-11-17). The project's own agent fixes audit findings; the engine runs Insi through `insi heartbeat` instead.
+const AUDIT_BRIDGE_GONE: &str = "--audit-finding and --retry-audit are no longer supported: the Incord engine fixes \
+audit findings with the project's own agent and runs Insi through `insi heartbeat`; nothing was run";
+
 fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
+    if flags.has("audit-finding") || flags.has("retry-audit") {
+        return Err(AUDIT_BRIDGE_GONE.into());
+    }
     if let Some(dir) = flags.get("retry-audit") {
         let dir = Path::new(dir);
         let report: serde_json::Value = serde_json::from_slice(

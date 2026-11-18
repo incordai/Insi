@@ -9,7 +9,7 @@ coder. No new model service or memory database is introduced.
 
 | Capability | Entry point | Boundary |
 |---|---|---|
-| Auditor → policy → isolated coder → benchmark → draft PR | `improve --code --audit-finding <id>` | Requires the new candidate API in the local engine; no direct-worker fallback |
+| Auditor → policy → isolated coder → benchmark → draft PR | removed (2026-11-17) | The engine fixes findings with the project's own agent and runs Insi through `insi heartbeat` |
 | PR reviews, summaries and inline findings | `review --pr N`, optionally `--publish` | Exact base/head checks, author-scoped duplicate suppression; COMMENT only |
 | Reproduction evidence | `reproductions` in the review plan | Identical frozen test on base/head; observed failures need a declared assertion marker |
 | Test-impact selection | `tests`, revision-pinned `graph`, `--with-memory` | Missing/stale/incomplete mappings fall back to full checks; graph completeness is not proven |
