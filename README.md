@@ -775,6 +775,42 @@ harness is, and putting it in place is yours to decide.
 Unattended runs that open pull requests wait for the GitHub App with
 short-lived, PR-only tokens; until then `--pr` uses the operator's login.
 
+## The project's own CI, on this machine: `insi ci`
+
+`insi ci --repo <dir>` runs the steps of the repository's own GitHub workflows
+(`.github/workflows/*.yml`) on this machine, so a push never finds out from
+GitHub what the machine could have said. It keeps the workflows that run on a
+push or a pull request, and for each job whose `runs-on` is this operating
+system (a `${{ matrix.os }}` is expanded) it runs every `run:` step in order,
+in the repository, with the step's shell, `env:` and working directory, and
+reports each step as `pass`, `FAIL`, `skip` (with why) or `unavailable` (a tool
+the step needs is not installed here). It exits 1 when a step failed;
+`--strict` also fails on an unavailable one.
+
+```text
+insi ci [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--json] [--quiet] [--strict]
+        [--timeout-secs N]
+insi ci --install-hook [--repo <dir>] [--force]
+```
+
+What it does not do, and says so for each step it passes over: it runs no
+`uses:` action (`actions/checkout` is the repository already in front of it;
+`setup-*` and `rust-toolchain` are the tools installed here; run the tool of a
+scanner action such as `cargo-deny-action` yourself); it runs no job with
+`container:` or `services:`; it never runs a step that would publish or push
+(`git push`, `cargo publish`, `npm publish`, `docker push`, `gh release`, and
+the like); it does not run a step whose `${{ ... }}` it cannot resolve (a
+secret, another step's output); and a matrix over versions runs once, with the
+versions installed here. A workflow run only by a tag, a release, a schedule or
+by hand is not a check and is left out, unless `--workflow <file>` names it.
+`--list` plans without running; `--json` is for an agent or a script.
+
+`insi ci --install-hook` writes `.git/hooks/pre-push` (wherever git looks for
+hooks), which runs `insi ci --quiet` before every push and stops the push when
+a step failed. `INSI_CI_SKIP=1 git push` skips it once; a hook that insi did not
+write is never replaced unless `--force`. An agent working in the repository
+runs `insi ci` before any push.
+
 ## Commands
 
 `insi doctor --markdown` collects offline diagnostics for a bug report: build
@@ -786,6 +822,8 @@ another repository and its work folder.
 
 ```text
 insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
+insi ci       [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--json] [--quiet] [--strict]
+              [--timeout-secs N] | --install-hook [--force]
 insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
               [--setup "<cmd>"] [--public-check "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
 insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]

@@ -17,6 +17,8 @@
 //! ```text
 //! insi init     [--repo <dir>] [--check "<cmd {tests}>"] [--setup "<cmd>"] [--worker <name> --model <id>] [--force]
 //!               [--no-mcp] [--no-hooks] [--no-ci]
+//! insi ci       [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--json] [--quiet] [--strict]
+//!               [--timeout-secs N] | --install-hook [--force]   (the project's own CI steps, on this machine)
 //! insi mine     [--source <repo>] [--tasks <dir>] [--private <dir>] [--check "<cmd {tests}>"]
 //!               [--setup "<cmd>"] [--public-check "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]
 //! insi validate --tasks <dir> --private <dir> [--only id,id] [--half older|newer] [--results <file>] [--jobs N]
@@ -46,6 +48,9 @@ use std::process::ExitCode;
 mod audit_bridge;
 mod autonomous;
 mod benchmark;
+// The project's own GitHub workflow steps, run on this machine (`insi ci`), and the YAML reader they need.
+mod ci;
+mod ci_yaml;
 mod context;
 mod doctor;
 #[cfg(test)]
@@ -88,6 +93,10 @@ const USAGE: &str = "usage:
                  [--status | --queue] [--plan <trusted-json>] [--offline]
                  [--reset-failures] [--publish] [suggest options]
   insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
+  insi ci       [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--json] [--quiet] [--strict]
+                [--timeout-secs N]   (run the project's own GitHub workflow steps for this OS and report
+                each as pass, FAIL, skip or unavailable; exits 1 when a step failed)
+  insi ci --install-hook [--repo <dir>] [--force]   (a pre-push hook that runs `insi ci --quiet`)
   insi watch-init [--repo <dir>]
   insi init     [--repo <dir>] [--check \"<cmd {tests}>\"] [--setup \"<cmd>\"] [--force]
                 [--worker incode|claude|codex|agy --model <id>]
@@ -390,6 +399,9 @@ fn run(args: &[String]) -> Result<(), String> {
             .get("plan")
             .ok_or("experiment requires --plan <file>")?;
         return experiment::run(Path::new(plan));
+    }
+    if command == "ci" {
+        return ci::command(&flags);
     }
     if command == "doctor" {
         let repo = flags
