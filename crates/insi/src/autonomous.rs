@@ -257,6 +257,7 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
         return serde_json::to_value(queue).map_err(|e| e.to_string());
     }
     let config = Config::load(&repo)?;
+    let hub = crate::issue::hub_for(&config)?;
     if config.test_cmd.is_empty() {
         return Err("heartbeat requires configured test_cmd".into());
     }
@@ -491,9 +492,9 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
     queue.tasks[index].result = Some(json!({"evidence":dir}));
     save(&queue_path, &queue)?;
     let result = if memory.is_some() {
-        suggest::run_with_memory(&options, &crate::issue::GhCli, memory)
+        suggest::run_with_memory(&options, hub.as_ref(), memory)
     } else {
-        suggest::run(&options, &crate::issue::GhCli)
+        suggest::run(&options, hub.as_ref())
     };
     let report = match &result {
         Ok(v) => v.clone(),

@@ -31,6 +31,61 @@ pub trait Hub {
     fn default_branch(&self, repo: &Path) -> Result<String, String>;
     /// Open a pull request; its URL.
     fn create_pr(&self, repo: &Path, pr: &NewPr) -> Result<String, String>;
+    /// Publish the committed local `branch` of the checkout `tree`, so a pull request can name it: the person's
+    /// own `git push` to `origin` unless a hub says otherwise ([`AppHub`] pushes as the GitHub App, through the
+    /// engine). Called by [`work_in`] and `harness_pr::propose_in`, after the credential scan.
+    fn push(&self, tree: &Path, branch: &str) -> Result<(), String> {
+        git(
+            tree,
+            &["push", "--quiet", "--set-upstream", "origin", branch],
+        )
+        .map(|_| ())
+    }
+
+    /// Whether the hosting service's `base` has moved on from `measured`, the commit an experiment was run on: the
+    /// default asks `origin` with the person's own git (`git ls-remote`). Called by `suggest::work` before it
+    /// publishes.
+    fn base_moved(&self, repo: &Path, base: &str, measured: &str) -> Result<bool, String> {
+        let at = git(
+            repo,
+            &["ls-remote", "origin", &format!("refs/heads/{base}")],
+        )?;
+        Ok(at.split_whitespace().next() != Some(measured))
+    }
+
+    /// Fail now, before work is spent, when this hub could not publish. Nothing by default; [`AppHub`] asks the
+    /// engine, so an engine that is not running or has no app stops `insi suggest` before its experiment. Called
+    /// by `suggest::run_with_memory`.
+    fn preflight(&self, _repo: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Publish the committed `branch` of `clone`, a clone of `repo` that Insi made for an experiment (its `origin` is
+    /// the local `repo`, not the hosting service), so a pull request can name it. By default a push from the clone to
+    /// `remote`, the address of the repository's own origin, with the person's own git. Called by `suggest::work`,
+    /// after the credential scan.
+    fn publish_clone(
+        &self,
+        clone: &Path,
+        _repo: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<(), String> {
+        // To the operator's own origin URL, not the clone's `origin`: `remote set-url` changed only `remote.origin.url`
+        // and left any `pushurl` in place, and it would now also trip the .git guard. `--no-verify` skips a pre-push
+        // hook as a second line of defence.
+        git(
+            clone,
+            &[
+                "push",
+                "--quiet",
+                "--no-verify",
+                remote,
+                &format!("HEAD:refs/heads/{branch}"),
+            ],
+        )
+        .map(|_| ())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +198,163 @@ impl Hub for GhCli {
             .find(|l| l.trim().starts_with("https://"))
             .map(|l| l.trim().to_string())
             .ok_or_else(|| format!("gh pr create printed no URL: {out}"))
+    }
+}
+
+/// GitHub as the owner's GitHub App (`hub = "app"` in the config), through the Incord memory engine's tools
+/// `github_issue`, `github_default_branch`, `github_push` and `github_pr_open`: the pull request shows the app
+/// (`incordai[bot]`) as its author, and Insi holds no login and no token, not even the app's. The engine holds the
+/// app's key and uses its installation access for the one push and the one request that needs it.
+///
+/// Every call can be refused with the engine's own reason (it is not running, no app is set up, the app is not
+/// installed on the repository or lacks a permission); that reason is the error, and nothing falls back to `gh`.
+/// Pull requests are drafts only. Chosen by [`hub_for`].
+pub struct AppHub {
+    addr: std::net::SocketAddr,
+}
+
+impl AppHub {
+    /// The hub for the engine at `INCORD_MEMORY_ADDR` (this machine's, by default). Nothing is called yet: the
+    /// first call says whether the engine runs and has the app set up. Called by [`hub_for`].
+    pub fn connect() -> Result<AppHub, String> {
+        Ok(AppHub::at(insi_memory::incord::address()?))
+    }
+
+    /// The hub for the engine at `addr`.
+    pub fn at(addr: std::net::SocketAddr) -> AppHub {
+        AppHub { addr }
+    }
+
+    /// One engine tool, its refusal worded as the app hub's.
+    fn call(&self, tool: &str, arguments: serde_json::Value) -> Result<serde_json::Value, String> {
+        insi_memory::incord::tool_result(self.addr, tool, arguments)
+            .map_err(|why| format!("hub = \"app\" (GitHub through the memory engine): {why}"))
+    }
+}
+
+impl Hub for AppHub {
+    fn issue(&self, repo: &Path, number: u64) -> Result<Issue, String> {
+        let v = self.call(
+            "github_issue",
+            serde_json::json!({"cwd": repo.display().to_string(), "number": number}),
+        )?;
+        Ok(Issue {
+            number: v["number"]
+                .as_u64()
+                .ok_or("the engine's issue has no number")?,
+            title: v["title"].as_str().unwrap_or_default().to_string(),
+            body: v["body"].as_str().unwrap_or_default().to_string(),
+            labels: v["labels"]
+                .as_array()
+                .map(|ls| {
+                    ls.iter()
+                        .filter_map(|l| l.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            open: v["open"].as_bool() == Some(true),
+            url: v["url"].as_str().unwrap_or_default().to_string(),
+        })
+    }
+
+    fn default_branch(&self, repo: &Path) -> Result<String, String> {
+        let v = self.call(
+            "github_default_branch",
+            serde_json::json!({"cwd": repo.display().to_string()}),
+        )?;
+        v["branch"]
+            .as_str()
+            .filter(|b| !b.is_empty())
+            .map(String::from)
+            .ok_or_else(|| "the engine named no default branch".to_string())
+    }
+
+    fn create_pr(&self, repo: &Path, pr: &NewPr) -> Result<String, String> {
+        if !pr.draft {
+            return Err(
+                "hub = \"app\" opens draft pull requests only; leave out --ready".to_string(),
+            );
+        }
+        let v = self.call(
+            "github_pr_open",
+            serde_json::json!({
+                "cwd": repo.display().to_string(),
+                "head": pr.head,
+                "base": pr.base,
+                "title": pr.title,
+                "body": pr.body,
+            }),
+        )?;
+        v["url"]
+            .as_str()
+            .filter(|u| u.starts_with("https://"))
+            .map(String::from)
+            .ok_or_else(|| "the engine returned no pull request URL".to_string())
+    }
+
+    fn push(&self, tree: &Path, branch: &str) -> Result<(), String> {
+        self.call(
+            "github_push",
+            serde_json::json!({"cwd": tree.display().to_string(), "branch": branch}),
+        )
+        .map(|_| ())
+    }
+
+    /// The engine does not read the repository's refs, and the person's own git login is the thing this hub
+    /// replaces, so the base is not looked at: a pull request is a diff a person reads against whatever the base is.
+    fn base_moved(&self, _repo: &Path, _base: &str, _measured: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    fn preflight(&self, repo: &Path) -> Result<(), String> {
+        self.default_branch(repo).map(|_| ())
+    }
+
+    /// IN TWO STEPS, THE FIRST WITH NO CREDENTIALS: (1) the branch is pushed from the clone into the person's local
+    /// `repo`, whose `origin` is the GitHub repository (a local push: the clone's `origin` IS that repository); (2)
+    /// the engine pushes it from there as the GitHub App ([`Self::push`]). A branch that already exists in `repo` is
+    /// refused, so nothing of the person's is touched. If step 2 is refused, the branch just made in `repo` is
+    /// removed again, and the engine's reason is the error: neither the repository nor the origin keeps it.
+    fn publish_clone(
+        &self,
+        clone: &Path,
+        repo: &Path,
+        _remote: &str,
+        branch: &str,
+    ) -> Result<(), String> {
+        let name = format!("refs/heads/{branch}");
+        if git(repo, &["rev-parse", "--verify", "--quiet", &name]).is_ok() {
+            return Err(format!(
+                "branch {branch} already exists in {}: look at that branch first",
+                repo.display()
+            ));
+        }
+        git(
+            clone,
+            &[
+                "push",
+                "--quiet",
+                "--no-verify",
+                &repo.display().to_string(),
+                &format!("HEAD:{name}"),
+            ],
+        )?;
+        if let Err(why) = self.push(repo, branch) {
+            // Only the branch this call just made.
+            let _ = git(repo, &["branch", "-D", branch]);
+            return Err(why);
+        }
+        Ok(())
+    }
+}
+
+/// The hub the config names: `gh` (the default) or the GitHub App through the engine. An unreachable engine, or
+/// one with no app, surfaces at the first call, before any worker runs (every flow asks the hub for the issue or
+/// the default branch first). Called by `issue_cmd` and `improve_cmd` (crates/insi/src/main.rs).
+pub fn hub_for(config: &Config) -> Result<Box<dyn Hub>, String> {
+    match config.hub.unwrap_or_default() {
+        insi_core::config::HubKind::Gh => Ok(Box::new(GhCli)),
+        insi_core::config::HubKind::App => Ok(Box::new(AppHub::connect()?)),
     }
 }
 
@@ -377,10 +589,7 @@ fn work_in(
         });
     }
 
-    git(
-        tree,
-        &["push", "--quiet", "--set-upstream", "origin", branch],
-    )?;
+    hub.push(tree, branch)?;
     let body = format!(
         "Closes #{n}.\n\n\
          Worked by Insi because the issue carries the label `{label}`. \
@@ -772,5 +981,352 @@ mod tests {
                 .expect("parsed")
                 .open
         );
+    }
+
+    use crate::engine_stub;
+    use serde_json::json;
+
+    /// What the engine's tools answer for issue 42, and what its `github_push` does: it pushes the branch to the
+    /// checkout's `origin` itself, as the engine does with the app's access. `refuse` makes a tool answer with
+    /// that reason instead.
+    fn engine(refuse: Option<(&'static str, &'static str)>) -> engine_stub::StandIn {
+        engine_stub::start(move |tool, args| {
+            if let Some((name, why)) = refuse {
+                if name == tool {
+                    return Err(why.to_string());
+                }
+            }
+            match tool {
+                "github_issue" => Ok(json!({
+                    "repo": "o/r", "number": 42, "title": "Greeting is rude", "body": "Say hello.",
+                    "labels": ["insi", "bug"], "state": "open", "open": true,
+                    "url": "https://github.com/o/r/issues/42", "is_pull_request": false
+                })),
+                "github_default_branch" => Ok(json!({"repo": "o/r", "branch": "main"})),
+                "github_push" => {
+                    let tree = args["cwd"].as_str().ok_or("no cwd")?;
+                    let branch = args["branch"].as_str().ok_or("no branch")?;
+                    git(Path::new(tree), &["push", "--quiet", "origin", branch])
+                        .map(|_| json!({"repo": "o/r", "branch": branch, "pushed": true}))
+                }
+                "github_pr_open" => Ok(
+                    json!({"repo": "o/r", "number": 9, "url": "https://github.com/o/r/pull/9", "draft": true}),
+                ),
+                other => Err(format!("unknown tool: '{other}'")),
+            }
+        })
+    }
+
+    fn app_config() -> Config {
+        Config {
+            hub: Some(insi_core::config::HubKind::App),
+            ..config(&["git", "--version"])
+        }
+    }
+
+    /// **THE APP HUB ASKS THE ENGINE FOR EVERYTHING GITHUB**: the issue, the default branch, the push and the
+    /// draft pull request, each by the engine's tool with the repository's folder, and returns what it answers.
+    #[test]
+    fn the_app_hub_calls_the_engines_github_tools() {
+        let stand_in = engine(None);
+        let hub = AppHub::at(stand_in.addr);
+        let repo = Path::new("/some/repo");
+        let got = hub.issue(repo, 42).expect("issue");
+        assert_eq!((got.number, got.open), (42, true));
+        assert_eq!(got.labels, ["insi", "bug"]);
+        assert_eq!(got.title, "Greeting is rude");
+        assert_eq!(
+            stand_in.last("github_issue"),
+            json!({"cwd": "/some/repo", "number": 42})
+        );
+        assert_eq!(hub.default_branch(repo).expect("branch"), "main");
+
+        let url = hub
+            .create_pr(
+                repo,
+                &NewPr {
+                    head: "insi/issue-42".into(),
+                    base: "main".into(),
+                    title: "Fix #42".into(),
+                    body: "Closes #42.".into(),
+                    draft: true,
+                },
+            )
+            .expect("opened");
+        assert_eq!(url, "https://github.com/o/r/pull/9");
+        assert_eq!(
+            stand_in.last("github_pr_open"),
+            json!({"cwd": "/some/repo", "head": "insi/issue-42", "base": "main", "title": "Fix #42", "body": "Closes #42."})
+        );
+
+        // Drafts only: a ready pull request is refused before the engine is asked.
+        let before = stand_in.tools().len();
+        let why = hub
+            .create_pr(
+                repo,
+                &NewPr {
+                    head: "h".into(),
+                    base: "main".into(),
+                    title: "t".into(),
+                    body: "b".into(),
+                    draft: false,
+                },
+            )
+            .expect_err("ready");
+        assert!(why.contains("draft"), "{why}");
+        assert_eq!(stand_in.tools().len(), before);
+    }
+
+    /// **WITH THE APP HUB THE ENGINE PUSHES, NOT INSI**: the branch reaches origin only through `github_push`
+    /// (the stand-in does the push), the draft names it, and Insi runs no `git push` of its own.
+    #[test]
+    fn with_the_app_hub_the_branch_is_pushed_by_the_engine() {
+        let (work, origin) = repo();
+        let stand_in = engine(None);
+        let hub = AppHub::at(stand_in.addr);
+        let outcome = work_issue(
+            &Run {
+                repo: &work,
+                number: 42,
+                config: &app_config(),
+                worker: &rewriting_worker(),
+                work_root: &temp("app-root"),
+                briefing: "",
+                draft: true,
+            },
+            &hub,
+        )
+        .expect("worked");
+        assert_eq!(
+            outcome,
+            Outcome::Opened {
+                url: "https://github.com/o/r/pull/9".into(),
+                branch: "insi/issue-42".into()
+            }
+        );
+        assert_eq!(
+            stand_in.tools(),
+            [
+                "github_issue",
+                "github_default_branch",
+                "github_push",
+                "github_pr_open"
+            ],
+            "the hub is asked in order, and the push comes before the pull request"
+        );
+        let push = stand_in.last("github_push");
+        assert_eq!(push["branch"], "insi/issue-42");
+        assert!(
+            push["cwd"].as_str().is_some_and(|c| c.contains("issue-42")),
+            "the engine is told the branch's worktree: {push}"
+        );
+        assert!(git(&origin, &["show", "insi/issue-42:greet.txt"])
+            .expect("pushed")
+            .contains("Greeting is rude"));
+        assert_eq!(stand_in.last("github_pr_open")["head"], "insi/issue-42");
+    }
+
+    /// **A REFUSAL BY THE ENGINE STOPS INSI WITH THE ENGINE'S REASON, AND NOTHING FALLS BACK TO `gh`**: with no
+    /// app set up the issue read is refused before any worker runs; a refused push leaves nothing on origin and
+    /// opens no pull request.
+    #[test]
+    fn an_engine_refusal_stops_the_app_hub_and_never_falls_back() {
+        let (work, origin) = repo();
+        let run = |stand_in: &engine_stub::StandIn, root: &str| {
+            work_issue(
+                &Run {
+                    repo: &work,
+                    number: 42,
+                    config: &app_config(),
+                    worker: &rewriting_worker(),
+                    work_root: &temp(root),
+                    briefing: "",
+                    draft: true,
+                },
+                &AppHub::at(stand_in.addr),
+            )
+        };
+        let off = "GitHub is not set up on this engine: set github_app_id in the audit settings";
+        let stand_in = engine(Some(("github_issue", off)));
+        let why = run(&stand_in, "off-root").expect_err("refused");
+        assert!(why.contains("hub = \"app\"") && why.contains(off), "{why}");
+        assert_eq!(
+            stand_in.tools(),
+            ["github_issue"],
+            "stopped at the first call, before any worker ran"
+        );
+
+        let denied = "the push of insi/issue-42 to o/r failed: denied; the GitHub App must be installed on o/r with Contents and Pull requests write permission";
+        let stand_in = engine(Some(("github_push", denied)));
+        let why = run(&stand_in, "denied-root").expect_err("refused push");
+        assert!(why.contains("Contents and Pull requests write"), "{why}");
+        assert!(
+            !stand_in.tools().contains(&"github_pr_open".to_string()),
+            "no pull request without the push"
+        );
+        assert!(
+            git(
+                &origin,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/insi/issue-42"
+                ]
+            )
+            .is_err(),
+            "Insi pushed nothing itself"
+        );
+    }
+
+    /// An engine that is not running is the reason, worded as the app hub's.
+    #[test]
+    fn an_engine_that_is_not_running_is_the_reason() {
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.local_addr().expect("addr")
+        };
+        let why = AppHub::at(closed)
+            .default_branch(Path::new("/r"))
+            .expect_err("unreachable");
+        assert!(
+            why.contains("hub = \"app\"") && why.contains("unreachable"),
+            "{why}"
+        );
+    }
+
+    /// WHO PUBLISHES IS THE CONFIG'S CHOICE: `gh` unless it says `app`.
+    #[test]
+    fn the_hub_follows_the_config() {
+        assert!(hub_for(&Config::default()).is_ok());
+        assert!(hub_for(&Config {
+            hub: Some(insi_core::config::HubKind::Gh),
+            ..Config::default()
+        })
+        .is_ok());
+        assert!(
+            hub_for(&app_config()).is_ok(),
+            "connecting calls nothing; the first call says"
+        );
+    }
+
+    /// A clone of `work` as `insi suggest` makes it (`--no-local`, so its `origin` is `work`), on a new branch one
+    /// commit ahead.
+    fn clone_with_branch(work: &Path, branch: &str) -> PathBuf {
+        let clone = temp("clone").join("candidate");
+        git(
+            work,
+            &[
+                "clone",
+                "--quiet",
+                "--no-local",
+                &work.display().to_string(),
+                &clone.display().to_string(),
+            ],
+        )
+        .expect("clone");
+        for (k, v) in [("user.email", "t@example.invalid"), ("user.name", "t")] {
+            git(&clone, &["config", k, v]).expect("config");
+        }
+        git(&clone, &["checkout", "--quiet", "-b", branch]).expect("branch");
+        std::fs::write(clone.join("greet.txt"), "[greeting]\n\ttext = hello\n").expect("w");
+        git(&clone, &["commit", "--quiet", "-am", "improve"]).expect("commit");
+        clone
+    }
+
+    fn has_branch(repo: &Path, branch: &str) -> bool {
+        git(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .is_ok()
+    }
+
+    /// **`insi suggest` PUBLISHES THROUGH THE APP, IN TWO STEPS**: the branch goes from the clone into the person's
+    /// local repository (no credentials: the clone's origin IS that repository), then the engine pushes it from
+    /// there as the app, so it lands in the repository's origin (the bare stand-in for GitHub). The engine is
+    /// asked in the person's repository, not the clone.
+    #[test]
+    fn a_clone_is_published_through_the_local_repository_and_the_engine() {
+        let (work, origin) = repo();
+        let branch = "insi/suggest-1-2";
+        let clone = clone_with_branch(&work, branch);
+        let stand_in = engine(None);
+        let hub = AppHub::at(stand_in.addr);
+        hub.preflight(&work).expect("the engine answers");
+        assert!(!hub.base_moved(&work, "main", "abc").expect("not looked at"));
+
+        hub.publish_clone(&clone, &work, "git@github.com:o/r.git", branch)
+            .expect("published");
+        assert!(
+            has_branch(&work, branch),
+            "step 1: the branch is in the person's repository"
+        );
+        assert!(
+            has_branch(&origin, branch),
+            "step 2: the engine pushed it to the origin"
+        );
+        let push = stand_in.last("github_push");
+        assert_eq!(push["branch"], branch);
+        assert_eq!(
+            push["cwd"].as_str().map(PathBuf::from),
+            Some(work.clone()),
+            "the engine pushes from the repository whose origin is GitHub, never the clone"
+        );
+        assert!(git(&origin, &["show", &format!("{branch}:greet.txt")])
+            .expect("pushed")
+            .contains("hello"));
+    }
+
+    /// **A REFUSED PUSH LEAVES NEITHER THE LOCAL REPOSITORY NOR THE ORIGIN WITH THE BRANCH**: the branch step 1 made
+    /// in the person's repository is removed again, nothing else of theirs is touched, and the engine's reason is
+    /// the error. A branch that was already there is refused before anything is pushed or removed.
+    #[test]
+    fn a_refused_publish_removes_the_branch_it_made_and_keeps_what_was_there() {
+        let (work, origin) = repo();
+        let branch = "insi/suggest-3-4";
+        let clone = clone_with_branch(&work, branch);
+        let denied = "the push of insi/suggest-3-4 to o/r failed: denied; the GitHub App must be installed on o/r with Contents and Pull requests write permission";
+        let stand_in = engine(Some(("github_push", denied)));
+        let hub = AppHub::at(stand_in.addr);
+        let why = hub
+            .publish_clone(&clone, &work, "git@github.com:o/r.git", branch)
+            .expect_err("refused");
+        assert!(why.contains("Contents and Pull requests write"), "{why}");
+        assert!(
+            !has_branch(&work, branch),
+            "the local repository does not keep it"
+        );
+        assert!(!has_branch(&origin, branch), "and neither does the origin");
+        assert!(
+            has_branch(&work, "main"),
+            "the person's own branches are untouched"
+        );
+
+        // A branch of that name already in the person's repository: refused, and NOT removed.
+        git(&work, &["branch", branch]).expect("theirs");
+        let calls = stand_in.tools().len();
+        let why = AppHub::at(stand_in.addr)
+            .publish_clone(&clone, &work, "git@github.com:o/r.git", branch)
+            .expect_err("exists");
+        assert!(why.contains("already exists"), "{why}");
+        assert!(has_branch(&work, branch), "theirs is kept");
+        assert_eq!(stand_in.tools().len(), calls, "the engine was never asked");
+    }
+
+    /// With no app the preflight says so at once, so `insi suggest` stops before its experiment.
+    #[test]
+    fn the_preflight_names_the_engines_reason() {
+        let off = "GitHub is not set up on this engine: set github_app_id in the audit settings";
+        let stand_in = engine(Some(("github_default_branch", off)));
+        let why = AppHub::at(stand_in.addr)
+            .preflight(Path::new("/r"))
+            .expect_err("refused");
+        assert!(why.contains("hub = \"app\"") && why.contains(off), "{why}");
     }
 }

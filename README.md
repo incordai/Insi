@@ -549,6 +549,22 @@ insi issue --number 42            # from the repository's folder
 - **A draft, with its evidence.** `Closes #<n>`, the check that passed, the
   worker, its time and tokens, whether lessons were briefed, where it ran.
   `--ready` opens it ready for review instead. Insi never merges.
+- **Who publishes.** By default the person's own GitHub login (`gh` and
+  `git push`). With `hub = "app"` in `.insi/config.toml`, the branch is pushed
+  and the draft opened by the owner's GitHub App through the Incord memory
+  engine's tools (`github_issue`, `github_default_branch`, `github_push`,
+  `github_pr_open`): the pull request shows the app as its author, and Insi
+  holds no login and no token. The engine must be running with a GitHub App
+  set up (`github_app_id` in its audit settings), installed on the repository
+  with Contents and Pull requests write permission. Without that, Insi stops
+  with the engine's reason before any worker runs; it never falls back to
+  `gh`. The app hub opens drafts only, so `--ready` is refused. `insi suggest`
+  and `insi heartbeat` publish through it too: they work in a clone, so the
+  branch is first pushed from the clone into your local repository (no
+  credentials: the clone's origin is that repository), and the engine then
+  pushes it from there as the app. If the engine refuses, the branch is
+  removed from your repository again and Insi stops with the reason. They do
+  not ask GitHub whether the base moved (that read would use your login).
 - **In a sandbox, when you name one.** The issue's text is anyone's, and the
   check runs the code the worker wrote. With a `[sandbox]` command, setup,
   the worker and the check each run inside it, with `{tree}` as the
@@ -822,6 +838,9 @@ protected = ["src/auth/**"]
 eval_tasks = "evals/tasks"
 private_checks = "../insi-private/app"
 trusted_issue_label = "insi"
+# Who publishes branches and draft pull requests: "gh" (your login, the default)
+# or "app" (the owner's GitHub App, through the Incord memory engine).
+hub = "gh"
 
 [worker]
 # {prompt} is replaced by the task's prompt. The default is incode.
