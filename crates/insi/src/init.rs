@@ -71,7 +71,9 @@ pub fn detect(repo: &Path) -> Option<Detected> {
         } else if has("package-lock.json") {
             ("npm", argv(&["npm", "ci"]), Some("package-lock.json"))
         } else {
-            ("npm", argv(&["npm", "install"]), None)
+            // No lock file: install without writing one, or the clone gains an untracked file and the
+            // observation is refused before anything is evaluated.
+            ("npm", argv(&["npm", "install", "--no-package-lock"]), None)
         };
         let setup_cache = lockfile.map(|lock| insi_core::task::SetupCache {
             key: vec![lock.to_string()],
@@ -539,6 +541,12 @@ mod tests {
             detect(&no_lock).expect("node").setup_cache,
             None,
             "no lockfile, nothing to key on"
+        );
+        // A setup that wrote a lock file into the clone was refused as an untracked change, and nothing was
+        // evaluated (the Incord engine's first live run, 2026-11-17): without a lock, none is written.
+        assert_eq!(
+            detect(&no_lock).expect("node").setup,
+            ["npm", "install", "--no-package-lock"]
         );
 
         let pnpm_jest = repo_with(&[
