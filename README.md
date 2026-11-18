@@ -565,9 +565,11 @@ insi issue --number 42            # from the repository's folder
   machine. A sandbox with no `{tree}` is refused.
 
   Without a container,
-  [`sbx`](https://github.com/incordai/Incode/tree/main/crates/sandbox) does
+  [`insbx`](https://github.com/incordai/Incode/tree/main/crates/sandbox) does
   the same with the OS's own sandbox (Landlock on Linux, Seatbelt on
-  macOS). In the example below:
+  macOS). Insi has it built in as `insi sandbox run` (`{insi}` in a command
+  is this Insi), taking `-w`, `--deny-read` and `-q`; for the network and
+  wall-clock flags below, use the `insbx` binary. In the example below:
   - writes are confined to the worktree and the agent's own state;
   - the network only reaches the hosts listed;
   - the session and `GIT_DIR` variables are stripped;
@@ -578,7 +580,7 @@ insi issue --number 42            # from the repository's folder
 
   ```toml
   [sandbox]
-  command = ["sbx", "run", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
+  command = ["insbx", "run", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
              "--allow-host", "api.anthropic.com", "--allow-host", "registry.npmjs.org",
              "--wall", "1800", "--"]
   ```
@@ -839,8 +841,10 @@ models and token usage from incode, Claude, Codex and Antigravity machine
 output. Codex cached input is charged separately; Antigravity thinking tokens
 count as output. Missing stream models fall back to `--model` or `-m`.
 Use `insi init --worker claude --model <id>` (also `codex` or `agy`) to write
-a headless preset with CLI-specific writable state paths inside `sbx`.
-These presets require `sbx` and a pinned model. `insi doctor` warns about
+a headless preset with CLI-specific writable state paths inside Insi's own
+sandbox (`insi sandbox run`, built in: nothing else to install; on macOS the
+system's sandbox, so the agent stays signed in). These presets require a
+pinned model. `insi doctor` warns about
 missing output, permission and model flags without printing their values.
 For wrapper commands set `[worker] format` to `incode`, `claude`, `codex`,
 `agy` or `text`; otherwise known executable names are inferred. Plain-text
@@ -868,12 +872,13 @@ places:
 - `{work}`: Insi's work folder;
 - `{source}`: the task's source, which must be a local folder.
 
-With [`sbx`](https://github.com/incordai/Incode/tree/main/crates/sandbox):
+With Insi's own sandbox (the library of
+[`insbx`](https://github.com/incordai/Incode/tree/main/crates/sandbox), built in):
 
 ```toml
 [worker]
 command = ["incode", "-t", "{prompt}", "--output-format", "stream-json", "--spec-gate=off"]
-sandbox = ["sbx", "run", "-q", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
+sandbox = ["{insi}", "sandbox", "run", "-q", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
            "-w", "~/.incode", "--deny-read", "{source}", "--deny-read", "{private}", "--"]
 ```
 

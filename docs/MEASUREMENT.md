@@ -11,8 +11,8 @@ change to Insi that breaks one of them needs to say why in its pull request.
      it, so no git command shows the fix.
    - The hidden tests arrive only after the worker stops.
    - The source checkout and the hidden tests on disk are kept from the
-     worker by `[worker] sandbox` (for example `sbx --deny-read {source}
-     --deny-read {private}`).
+     worker by `[worker] sandbox` (for example `{insi} sandbox run --deny-read {source}
+     --deny-read {private}`, Insi's built-in sandbox).
    - `insi report` counts attempts that ran without one, because their passes
      aren't proof of the work.
 

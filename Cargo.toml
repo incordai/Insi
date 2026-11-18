@@ -33,3 +33,6 @@ insi-eval = { path = "crates/insi-eval", version = "0.1.0" }
 insi-memory = { path = "crates/insi-memory", version = "0.1.0" }
 insi-loop = { path = "crates/insi-loop", version = "0.1.0" }
 insi-connectors = { path = "crates/insi-connectors", version = "0.1.0" }
+# Our sandbox (incordai/Incode crates/sandbox; its binary is `insbx`), built into `insi sandbox run`. A commit, not a
+# branch, so a build is the same build everywhere; move it forward on purpose.
+incord-sandbox = { git = "https://github.com/incordai/Incode", rev = "0ffcb90c04e5134f3cb2a3f4c6fe821501d2a04c" }

@@ -59,6 +59,8 @@ mod review;
 mod review_evidence;
 mod review_quality;
 mod review_security;
+// The worker's sandbox (`insi sandbox run`), the incord-sandbox library built in.
+mod sandbox;
 mod suggest;
 mod suggest_fit;
 mod suggest_memory;
@@ -150,7 +152,14 @@ by date, to learn on one half and measure on the other.";
 const BRIEFING_CHARS: usize = 4_000;
 
 fn main() -> ExitCode {
+    // First, before anything else: when this process is the sandbox's helper (re-executed by `insi sandbox run`), it
+    // confines itself and becomes the command here, never returning.
+    incord_sandbox::enter_if_requested();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Ahead of `run`: its flag parsing stops at the `--` before the sandboxed command.
+    if let Some(("sandbox", rest)) = args.split_first().map(|(c, r)| (c.as_str(), r)) {
+        return sandbox::main(rest);
+    }
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {

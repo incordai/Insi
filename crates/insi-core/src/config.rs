@@ -117,6 +117,21 @@ pub const PRIVATE: &str = "{private}";
 pub const WORK: &str = "{work}";
 /// In `[worker] sandbox`: the task's source repository.
 pub const SOURCE: &str = "{source}";
+/// In `[worker] sandbox` and `[sandbox] command`: this Insi program, filled in when a command is wrapped (not when the
+/// config is written, so a moved or updated Insi still runs). The presets' sandbox is `{insi} sandbox run …`, the
+/// sandbox built into Insi (crates/insi/src/sandbox.rs, the incord-sandbox library), so nothing else is installed.
+pub const INSI: &str = "{insi}";
+
+/// `arg` with [`INSI`] replaced by the running program's path ("insi" if it cannot be named).
+fn fill_insi(arg: &str) -> String {
+    if !arg.contains(INSI) {
+        return arg.to_string();
+    }
+    let program = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "insi".to_string());
+    arg.replace(INSI, &program)
+}
 
 /// A command every step of issue work runs inside, e.g. a container:
 ///
@@ -154,7 +169,7 @@ impl Sandbox {
         let tree = tree.display().to_string();
         self.command
             .iter()
-            .map(|a| a.replace(TREE, &tree))
+            .map(|a| fill_insi(&a.replace(TREE, &tree)))
             .chain(argv.iter().cloned())
             .collect()
     }
@@ -242,13 +257,15 @@ pub struct Worker {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub own_files: Vec<String>,
     /// A command the worker step of an eval attempt runs inside, with the
-    /// worker's own command appended, e.g. `sbx`:
+    /// worker's own command appended, e.g. Insi's own sandbox (what the presets write):
     ///
     /// ```toml
     /// [worker]
-    /// sandbox = ["sbx", "run", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
+    /// sandbox = ["{insi}", "sandbox", "run", "-w", "{tree}", "-w", "~/.claude", "-w", "~/.claude.json",
     ///            "--deny-read", "{source}", "--deny-read", "{private}", "--"]
     /// ```
+    ///
+    /// `{insi}` is this Insi program; `insbx run` takes the same flags.
     ///
     /// `{tree}` is the attempt's folder (required), `{private}` where the
     /// hidden tests are kept, `{work}` Insi's work folder, and `{source}`
@@ -309,7 +326,7 @@ impl Worker {
         }
         crate::worker_answer(stdout)
     }
-    /// Build an unattended CLI preset with its credential paths writable only inside sbx.
+    /// Build an unattended CLI preset with its own state folders writable only inside Insi's sandbox.
     /// The model is explicit so experiments never silently follow a CLI default.
     pub fn preset(name: &str, model: &str) -> Result<Self, String> {
         let (command, paths, own): (Vec<&str>, Vec<&str>, &str) = match name {
@@ -368,7 +385,10 @@ impl Worker {
         if model.trim().is_empty() {
             return Err("pin a model with --model when selecting this worker".into());
         }
-        let mut sandbox: Vec<String> = ["sbx", "run", "-q", "-w", TREE].map(String::from).to_vec();
+        // Insi's own sandbox (`insi sandbox run`, the flags of our `insbx`), not a separate install (the owner,
+        // 2026-11-17). On macOS it is the system's sandbox, so the worker keeps the agent's sign-in.
+        let mut sandbox: Vec<String> =
+            [INSI, "sandbox", "run", "-q", "-w", TREE].map(String::from).to_vec();
         for path in paths {
             sandbox.extend(["-w".into(), path.into()]);
         }
@@ -495,10 +515,12 @@ impl Worker {
             ));
         }
         let fill = |a: &String| {
-            a.replace(TREE, &places.tree.display().to_string())
-                .replace(PRIVATE, &places.private.display().to_string())
-                .replace(WORK, &places.work.display().to_string())
-                .replace(SOURCE, places.source)
+            fill_insi(
+                &a.replace(TREE, &places.tree.display().to_string())
+                    .replace(PRIVATE, &places.private.display().to_string())
+                    .replace(WORK, &places.work.display().to_string())
+                    .replace(SOURCE, places.source),
+            )
         };
         Ok(self.sandbox.iter().map(fill).chain(argv).collect())
     }
@@ -816,6 +838,31 @@ mod tests {
             .expect_err("no tree");
         assert!(why.contains("{tree}"), "{why}");
         assert!(Config::parse("[sandbox]\ncommand = []").is_err());
+    }
+
+    /// The presets run the worker in Insi's own sandbox (`{insi} sandbox run`), not a separately installed program,
+    /// and `{insi}` becomes the running program when a command is wrapped (the owner, 2026-11-17: no Docker sbx).
+    #[test]
+    fn presets_use_insis_own_sandbox_and_name_the_running_program() {
+        let me = std::env::current_exe().expect("this test binary").display().to_string();
+        for name in ["claude", "codex", "agy"] {
+            let worker = Worker::preset(name, "pinned-model").expect("preset");
+            assert_eq!(worker.sandbox[..4], [INSI, "sandbox", "run", "-q"], "{name}");
+            assert!(!worker.sandbox.iter().any(|a| a == "sbx"), "{name}");
+            let places = Places {
+                tree: Path::new("/w/t"),
+                private: Path::new("/w/p"),
+                work: Path::new("/w"),
+                source: ".",
+            };
+            let argv = worker.sandboxed(vec!["go".into()], &places).expect("wraps");
+            assert_eq!(argv[0], me, "{name}");
+            assert_eq!(argv.last().map(String::as_str), Some("go"));
+        }
+        let config = Config::parse("[sandbox]\ncommand = [\"{insi}\", \"sandbox\", \"run\", \"-w\", \"{tree}\", \"--\"]")
+            .expect("valid");
+        let wrapped = config.sandbox.expect("sandbox").wrap(&["npm".into()], Path::new("/w/i"));
+        assert_eq!(wrapped, [me.as_str(), "sandbox", "run", "-w", "/w/i", "--", "npm"]);
     }
 
     /// **TOPIC RULES ARE READ, AND ONE THAT CAN NEVER APPLY IS REFUSED.**
