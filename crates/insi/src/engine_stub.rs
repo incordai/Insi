@@ -24,7 +24,12 @@ pub struct StandIn {
 impl StandIn {
     /// The tools asked so far, in order.
     pub fn tools(&self) -> Vec<String> {
-        self.calls.lock().expect("calls").iter().map(|(t, _)| t.clone()).collect()
+        self.calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect()
     }
 
     /// The arguments of the last call of `tool`.
@@ -47,7 +52,9 @@ impl Drop for StandIn {
 }
 
 /// Start a stand-in engine whose tools are answered by `handler`.
-pub fn start(handler: impl Fn(&str, &Value) -> Result<Value, String> + Send + Sync + 'static) -> StandIn {
+pub fn start(
+    handler: impl Fn(&str, &Value) -> Result<Value, String> + Send + Sync + 'static,
+) -> StandIn {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let addr = listener.local_addr().expect("addr");
@@ -95,9 +102,14 @@ fn serve(socket: &mut std::net::TcpStream, seen: &Mutex<Vec<(String, Value)>>, h
     let text = String::from_utf8_lossy(&raw).into_owned();
     let body = text.split_once("\r\n\r\n").map_or("", |(_, b)| b);
     let request: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-    let tool = request["params"]["name"].as_str().unwrap_or_default().to_string();
+    let tool = request["params"]["name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let arguments = request["params"]["arguments"].clone();
-    seen.lock().expect("calls").push((tool.clone(), arguments.clone()));
+    seen.lock()
+        .expect("calls")
+        .push((tool.clone(), arguments.clone()));
     let reply = match handler(&tool, &arguments) {
         Ok(value) => json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":value.to_string()}],"isError":false}}),
         Err(why) => json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":why}}),

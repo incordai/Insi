@@ -403,8 +403,9 @@ impl Worker {
         }
         // Insi's own sandbox (`insi sandbox run`, the flags of our `insbx`), not a separate install (the owner,
         // 2026-11-17). On macOS it is the system's sandbox, so the worker keeps the agent's sign-in.
-        let mut sandbox: Vec<String> =
-            [INSI, "sandbox", "run", "-q", "-w", TREE].map(String::from).to_vec();
+        let mut sandbox: Vec<String> = [INSI, "sandbox", "run", "-q", "-w", TREE]
+            .map(String::from)
+            .to_vec();
         for path in paths {
             sandbox.extend(["-w".into(), path.into()]);
         }
@@ -616,7 +617,9 @@ impl Config {
         let path = named.map_or_else(|| repo.join(DIR).join(FILE), Path::to_path_buf);
         match std::fs::read_to_string(&path) {
             Ok(text) => Self::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && named.is_none() => Ok(Config::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && named.is_none() => {
+                Ok(Config::default())
+            }
             Err(e) => Err(format!("could not read {}: {e}", path.display())),
         }
     }
@@ -718,16 +721,34 @@ mod tests {
     /// refused when the config is read, never read as `gh`.
     #[test]
     fn the_hub_is_gh_unless_the_config_names_the_app() {
-        assert_eq!(Config::parse("").expect("empty").hub, None, "unset is the default, gh");
-        assert_eq!(Config::parse("hub = \"gh\"").expect("gh").hub, Some(HubKind::Gh));
-        assert_eq!(Config::parse("hub = \"app\"").expect("app").hub, Some(HubKind::App));
+        assert_eq!(
+            Config::parse("").expect("empty").hub,
+            None,
+            "unset is the default, gh"
+        );
+        assert_eq!(
+            Config::parse("hub = \"gh\"").expect("gh").hub,
+            Some(HubKind::Gh)
+        );
+        assert_eq!(
+            Config::parse("hub = \"app\"").expect("app").hub,
+            Some(HubKind::App)
+        );
         assert_eq!(HubKind::default(), HubKind::Gh);
         for bad in ["hub = \"App2\"", "hub = \"github\"", "hub = true"] {
             assert!(Config::parse(bad).is_err(), "{bad}");
         }
-        let written = Config { hub: Some(HubKind::App), ..Config::default() }.to_toml().expect("toml");
+        let written = Config {
+            hub: Some(HubKind::App),
+            ..Config::default()
+        }
+        .to_toml()
+        .expect("toml");
         assert!(written.contains("hub = \"app\""), "{written}");
-        assert!(!Config::default().to_toml().expect("toml").contains("hub"), "unset is not written");
+        assert!(
+            !Config::default().to_toml().expect("toml").contains("hub"),
+            "unset is not written"
+        );
     }
 
     #[test]
@@ -762,15 +783,28 @@ mod tests {
         let root = std::env::temp_dir().join(format!("insi-config-{}", std::process::id()));
         let repo = root.join("repo");
         std::fs::create_dir_all(repo.join(DIR)).expect("repo");
-        std::fs::write(repo.join(DIR).join(FILE), "test_cmd = [\"repo-tests\"]\n").expect("repo config");
+        std::fs::write(repo.join(DIR).join(FILE), "test_cmd = [\"repo-tests\"]\n")
+            .expect("repo config");
         let outside = root.join("engine-insi.toml");
         std::fs::write(&outside, "test_cmd = [\"engine-tests\"]\n").expect("outside config");
 
-        assert_eq!(Config::load_from(&repo, Some(&outside)).expect("named").test_cmd, ["engine-tests"]);
-        assert_eq!(Config::load_from(&repo, None).expect("repo").test_cmd, ["repo-tests"]);
-        let missing = Config::load_from(&repo, Some(&root.join("gone.toml"))).expect_err("missing named file");
+        assert_eq!(
+            Config::load_from(&repo, Some(&outside))
+                .expect("named")
+                .test_cmd,
+            ["engine-tests"]
+        );
+        assert_eq!(
+            Config::load_from(&repo, None).expect("repo").test_cmd,
+            ["repo-tests"]
+        );
+        let missing = Config::load_from(&repo, Some(&root.join("gone.toml")))
+            .expect_err("missing named file");
         assert!(missing.contains("gone.toml"), "{missing}");
-        assert!(Config::load_from(&root.join("bare"), None).expect("defaults").test_cmd.is_empty());
+        assert!(Config::load_from(&root.join("bare"), None)
+            .expect("defaults")
+            .test_cmd
+            .is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -876,10 +910,17 @@ mod tests {
     /// and `{insi}` becomes the running program when a command is wrapped (the owner, 2026-11-17: no Docker sbx).
     #[test]
     fn presets_use_insis_own_sandbox_and_name_the_running_program() {
-        let me = std::env::current_exe().expect("this test binary").display().to_string();
+        let me = std::env::current_exe()
+            .expect("this test binary")
+            .display()
+            .to_string();
         for name in ["claude", "codex", "agy"] {
             let worker = Worker::preset(name, "pinned-model").expect("preset");
-            assert_eq!(worker.sandbox[..4], [INSI, "sandbox", "run", "-q"], "{name}");
+            assert_eq!(
+                worker.sandbox[..4],
+                [INSI, "sandbox", "run", "-q"],
+                "{name}"
+            );
             assert!(!worker.sandbox.iter().any(|a| a == "sbx"), "{name}");
             let places = Places {
                 tree: Path::new("/w/t"),
@@ -891,10 +932,18 @@ mod tests {
             assert_eq!(argv[0], me, "{name}");
             assert_eq!(argv.last().map(String::as_str), Some("go"));
         }
-        let config = Config::parse("[sandbox]\ncommand = [\"{insi}\", \"sandbox\", \"run\", \"-w\", \"{tree}\", \"--\"]")
-            .expect("valid");
-        let wrapped = config.sandbox.expect("sandbox").wrap(&["npm".into()], Path::new("/w/i"));
-        assert_eq!(wrapped, [me.as_str(), "sandbox", "run", "-w", "/w/i", "--", "npm"]);
+        let config = Config::parse(
+            "[sandbox]\ncommand = [\"{insi}\", \"sandbox\", \"run\", \"-w\", \"{tree}\", \"--\"]",
+        )
+        .expect("valid");
+        let wrapped = config
+            .sandbox
+            .expect("sandbox")
+            .wrap(&["npm".into()], Path::new("/w/i"));
+        assert_eq!(
+            wrapped,
+            [me.as_str(), "sandbox", "run", "-w", "/w/i", "--", "npm"]
+        );
     }
 
     /// **TOPIC RULES ARE READ, AND ONE THAT CAN NEVER APPLY IS REFUSED.**

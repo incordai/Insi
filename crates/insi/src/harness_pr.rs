@@ -375,14 +375,18 @@ mod tests {
         let pushing = |refuse: bool| {
             crate::engine_stub::start(move |tool, args| match tool {
                 "github_default_branch" => Ok(serde_json::json!({"repo": "o/r", "branch": "main"})),
-                "github_push" if refuse => Err("push refused: the app lacks Contents write".to_string()),
+                "github_push" if refuse => {
+                    Err("push refused: the app lacks Contents write".to_string())
+                }
                 "github_push" => {
                     let tree = args["cwd"].as_str().ok_or("no cwd")?;
                     let branch = args["branch"].as_str().ok_or("no branch")?;
                     git(Path::new(tree), &["push", "--quiet", "origin", branch])
                         .map(|_| serde_json::json!({"pushed": true}))
                 }
-                "github_pr_open" => Ok(serde_json::json!({"url": "https://github.com/o/r/pull/3", "draft": true})),
+                "github_pr_open" => {
+                    Ok(serde_json::json!({"url": "https://github.com/o/r/pull/3", "draft": true}))
+                }
                 other => Err(format!("unknown tool: '{other}'")),
             })
         };
@@ -397,10 +401,25 @@ mod tests {
 
         let refused = pushing(true);
         let why = open(&pr, &AppHub::at(refused.addr)).expect_err("refused");
-        assert!(why.contains("hub = \"app\"") && why.contains("Contents write"), "{why}");
-        assert!(!refused.tools().contains(&"github_pr_open".to_string()), "no draft without the push");
         assert!(
-            git(&origin, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err(),
+            why.contains("hub = \"app\"") && why.contains("Contents write"),
+            "{why}"
+        );
+        assert!(
+            !refused.tools().contains(&"github_pr_open".to_string()),
+            "no draft without the push"
+        );
+        assert!(
+            git(
+                &origin,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}")
+                ]
+            )
+            .is_err(),
             "Insi pushed nothing itself"
         );
         // The refused branch is kept locally, so the person can look at it: a second try is told so.
@@ -410,13 +429,22 @@ mod tests {
         let opened = open(&pr, &AppHub::at(engine.addr)).expect("opened");
         assert_eq!(
             opened,
-            Outcome::Opened { url: "https://github.com/o/r/pull/3".into(), branch: branch.clone() }
+            Outcome::Opened {
+                url: "https://github.com/o/r/pull/3".into(),
+                branch: branch.clone()
+            }
         );
-        assert_eq!(engine.tools(), ["github_default_branch", "github_push", "github_pr_open"]);
+        assert_eq!(
+            engine.tools(),
+            ["github_default_branch", "github_push", "github_pr_open"]
+        );
         assert_eq!(engine.last("github_pr_open")["head"], branch.as_str());
-        assert!(git(&origin, &["show", &format!("{branch}:agent/harness/prompt.md")])
-            .expect("pushed")
-            .contains("Name the markers"));
+        assert!(git(
+            &origin,
+            &["show", &format!("{branch}:agent/harness/prompt.md")]
+        )
+        .expect("pushed")
+        .contains("Name the markers"));
     }
 
     /// **A HARNESS WITH A CREDENTIAL IN IT IS NEVER PUSHED.**

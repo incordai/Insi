@@ -445,26 +445,39 @@ mod tests {
         let (addr, engine) = engine_replying(
             r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"branch\":\"main\"}"}],"isError":false}}"#,
         );
-        let got = tool_result(addr, "github_default_branch", json!({"cwd": "/r"})).expect("answered");
+        let got =
+            tool_result(addr, "github_default_branch", json!({"cwd": "/r"})).expect("answered");
         assert_eq!(got, json!({"branch": "main"}));
         let request = engine.join().expect("engine");
-        assert!(request.contains("\"github_default_branch\"") && request.contains("\"cwd\":\"/r\""), "{request}");
+        assert!(
+            request.contains("\"github_default_branch\"") && request.contains("\"cwd\":\"/r\""),
+            "{request}"
+        );
 
         let (addr, engine) = engine_replying(
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"GitHub is not set up on this engine: set github_app_id"}}"#,
         );
         let why = tool_result(addr, "github_push", json!({})).expect_err("refused");
-        assert_eq!(why, "GitHub is not set up on this engine: set github_app_id");
+        assert_eq!(
+            why,
+            "GitHub is not set up on this engine: set github_app_id"
+        );
         engine.join().expect("engine");
 
         let (addr, engine) = engine_replying(
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unknown tool: 'github_push'"}}"#,
         );
         let why = tool_result(addr, "github_push", json!({})).expect_err("old engine");
-        assert!(why.contains("no github_push tool") && why.contains("update the engine"), "{why}");
+        assert!(
+            why.contains("no github_push tool") && why.contains("update the engine"),
+            "{why}"
+        );
         engine.join().expect("engine");
 
-        assert!(tool_result("10.0.0.5:9180".parse().expect("addr"), "x", json!({})).is_err(), "only a local engine");
+        assert!(
+            tool_result("10.0.0.5:9180".parse().expect("addr"), "x", json!({})).is_err(),
+            "only a local engine"
+        );
     }
 
     #[test]

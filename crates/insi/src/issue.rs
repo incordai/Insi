@@ -35,7 +35,11 @@ pub trait Hub {
     /// own `git push` to `origin` unless a hub says otherwise ([`AppHub`] pushes as the GitHub App, through the
     /// engine). Called by [`work_in`] and `harness_pr::propose_in`, after the credential scan.
     fn push(&self, tree: &Path, branch: &str) -> Result<(), String> {
-        git(tree, &["push", "--quiet", "--set-upstream", "origin", branch]).map(|_| ())
+        git(
+            tree,
+            &["push", "--quiet", "--set-upstream", "origin", branch],
+        )
+        .map(|_| ())
     }
 }
 
@@ -168,9 +172,7 @@ impl AppHub {
     /// The hub for the engine at `INCORD_MEMORY_ADDR` (this machine's, by default). Nothing is called yet: the
     /// first call says whether the engine runs and has the app set up. Called by [`hub_for`].
     pub fn connect() -> Result<AppHub, String> {
-        Ok(AppHub {
-            addr: insi_memory::incord::address()?,
-        })
+        Ok(AppHub::at(insi_memory::incord::address()?))
     }
 
     /// The hub for the engine at `addr`.
@@ -192,12 +194,18 @@ impl Hub for AppHub {
             serde_json::json!({"cwd": repo.display().to_string(), "number": number}),
         )?;
         Ok(Issue {
-            number: v["number"].as_u64().ok_or("the engine's issue has no number")?,
+            number: v["number"]
+                .as_u64()
+                .ok_or("the engine's issue has no number")?,
             title: v["title"].as_str().unwrap_or_default().to_string(),
             body: v["body"].as_str().unwrap_or_default().to_string(),
             labels: v["labels"]
                 .as_array()
-                .map(|ls| ls.iter().filter_map(|l| l.as_str().map(String::from)).collect())
+                .map(|ls| {
+                    ls.iter()
+                        .filter_map(|l| l.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             open: v["open"].as_bool() == Some(true),
             url: v["url"].as_str().unwrap_or_default().to_string(),
@@ -921,9 +929,9 @@ mod tests {
                     git(Path::new(tree), &["push", "--quiet", "origin", branch])
                         .map(|_| json!({"repo": "o/r", "branch": branch, "pushed": true}))
                 }
-                "github_pr_open" => {
-                    Ok(json!({"repo": "o/r", "number": 9, "url": "https://github.com/o/r/pull/9", "draft": true}))
-                }
+                "github_pr_open" => Ok(
+                    json!({"repo": "o/r", "number": 9, "url": "https://github.com/o/r/pull/9", "draft": true}),
+                ),
                 other => Err(format!("unknown tool: '{other}'")),
             }
         })
@@ -947,7 +955,10 @@ mod tests {
         assert_eq!((got.number, got.open), (42, true));
         assert_eq!(got.labels, ["insi", "bug"]);
         assert_eq!(got.title, "Greeting is rude");
-        assert_eq!(stand_in.last("github_issue"), json!({"cwd": "/some/repo", "number": 42}));
+        assert_eq!(
+            stand_in.last("github_issue"),
+            json!({"cwd": "/some/repo", "number": 42})
+        );
         assert_eq!(hub.default_branch(repo).expect("branch"), "main");
 
         let url = hub
@@ -1015,7 +1026,12 @@ mod tests {
         );
         assert_eq!(
             stand_in.tools(),
-            ["github_issue", "github_default_branch", "github_push", "github_pr_open"],
+            [
+                "github_issue",
+                "github_default_branch",
+                "github_push",
+                "github_pr_open"
+            ],
             "the hub is asked in order, and the push comes before the pull request"
         );
         let push = stand_in.last("github_push");
@@ -1054,15 +1070,31 @@ mod tests {
         let stand_in = engine(Some(("github_issue", off)));
         let why = run(&stand_in, "off-root").expect_err("refused");
         assert!(why.contains("hub = \"app\"") && why.contains(off), "{why}");
-        assert_eq!(stand_in.tools(), ["github_issue"], "stopped at the first call, before any worker ran");
+        assert_eq!(
+            stand_in.tools(),
+            ["github_issue"],
+            "stopped at the first call, before any worker ran"
+        );
 
         let denied = "the push of insi/issue-42 to o/r failed: denied; the GitHub App must be installed on o/r with Contents and Pull requests write permission";
         let stand_in = engine(Some(("github_push", denied)));
         let why = run(&stand_in, "denied-root").expect_err("refused push");
         assert!(why.contains("Contents and Pull requests write"), "{why}");
-        assert!(!stand_in.tools().contains(&"github_pr_open".to_string()), "no pull request without the push");
         assert!(
-            git(&origin, &["rev-parse", "--verify", "--quiet", "refs/heads/insi/issue-42"]).is_err(),
+            !stand_in.tools().contains(&"github_pr_open".to_string()),
+            "no pull request without the push"
+        );
+        assert!(
+            git(
+                &origin,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/insi/issue-42"
+                ]
+            )
+            .is_err(),
             "Insi pushed nothing itself"
         );
     }
@@ -1074,8 +1106,13 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             listener.local_addr().expect("addr")
         };
-        let why = AppHub::at(closed).default_branch(Path::new("/r")).expect_err("unreachable");
-        assert!(why.contains("hub = \"app\"") && why.contains("unreachable"), "{why}");
+        let why = AppHub::at(closed)
+            .default_branch(Path::new("/r"))
+            .expect_err("unreachable");
+        assert!(
+            why.contains("hub = \"app\"") && why.contains("unreachable"),
+            "{why}"
+        );
     }
 
     /// WHO PUBLISHES IS THE CONFIG'S CHOICE: `gh` unless it says `app`, and the flows that publish from a
@@ -1083,10 +1120,20 @@ mod tests {
     #[test]
     fn the_hub_follows_the_config_and_clone_flows_refuse_the_app() {
         assert!(hub_for(&Config::default()).is_ok());
-        assert!(hub_for(&Config { hub: Some(insi_core::config::HubKind::Gh), ..Config::default() }).is_ok());
-        assert!(hub_for(&app_config()).is_ok(), "connecting calls nothing; the first call says");
+        assert!(hub_for(&Config {
+            hub: Some(insi_core::config::HubKind::Gh),
+            ..Config::default()
+        })
+        .is_ok());
+        assert!(
+            hub_for(&app_config()).is_ok(),
+            "connecting calls nothing; the first call says"
+        );
         assert!(gh_hub_only(&Config::default(), "insi suggest").is_ok());
         let why = gh_hub_only(&app_config(), "insi suggest").expect_err("refused");
-        assert!(why.contains("insi suggest") && why.contains("hub = \"gh\""), "{why}");
+        assert!(
+            why.contains("insi suggest") && why.contains("hub = \"gh\""),
+            "{why}"
+        );
     }
 }
