@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 /// Every `.rs` file under `dir`, recursively.
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -33,14 +35,26 @@ fn every_own_rust_file_carries_the_license_header() {
     for dir in ["crates", "fuzz", "scripts"] {
         rust_files(&root.join(dir), &mut files);
     }
-    assert!(files.len() > 50, "the walk found the sources ({} files)", files.len());
+    assert!(
+        files.len() > 50,
+        "the walk found the sources ({} files)",
+        files.len()
+    );
     let missing: Vec<String> = files
         .iter()
         .filter(|path| {
             let text = std::fs::read_to_string(path).unwrap_or_default();
-            !text.lines().take(12).any(|l| l.contains("SPDX-License-Identifier: BUSL-1.1"))
+            !text
+                .lines()
+                .take(12)
+                .any(|l| l.contains("SPDX-License-Identifier: BUSL-1.1"))
         })
-        .map(|path| path.strip_prefix(&root).unwrap_or(path).display().to_string())
+        .map(|path| {
+            path.strip_prefix(&root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        })
         .collect();
     assert!(
         missing.is_empty(),

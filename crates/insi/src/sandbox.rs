@@ -144,18 +144,33 @@ mod tests {
     #[test]
     fn the_presets_flags_parse_as_insbx_takes_them() {
         let request = parse(&args(&[
-            "run", "-q", "-w", "/w/tree", "-w", "~/.claude", "--deny-read", "/src", "--", "claude", "-p", "fix it",
+            "run",
+            "-q",
+            "-w",
+            "/w/tree",
+            "-w",
+            "~/.claude",
+            "--deny-read",
+            "/src",
+            "--",
+            "claude",
+            "-p",
+            "fix it",
         ]))
         .expect("parses");
         assert!(request.quiet && !request.best_effort);
-        assert_eq!(request.write, [PathBuf::from("/w/tree"), PathBuf::from("~/.claude")]);
+        assert_eq!(
+            request.write,
+            [PathBuf::from("/w/tree"), PathBuf::from("~/.claude")]
+        );
         assert_eq!(request.deny_read, [PathBuf::from("/src")]);
         assert_eq!(request.command, args(&["claude", "-p", "fix it"]));
     }
 
     #[test]
     fn everything_after_the_separator_is_the_command_even_flags() {
-        let request = parse(&args(&["run", "-w", ".", "--", "git", "-w", "--deny-read"])).expect("parses");
+        let request =
+            parse(&args(&["run", "-w", ".", "--", "git", "-w", "--deny-read"])).expect("parses");
         assert_eq!(request.command, args(&["git", "-w", "--deny-read"]));
         assert_eq!(request.write, [PathBuf::from(".")]);
     }
@@ -176,12 +191,15 @@ mod tests {
 
     #[test]
     fn the_policy_is_insbxs_for_the_same_flags() {
-        let write = policy(&parse(&args(&["run", "-w", "/t", "--deny-read", "/s", "--", "x"])).expect("parses"));
+        let write = policy(
+            &parse(&args(&["run", "-w", "/t", "--deny-read", "/s", "--", "x"])).expect("parses"),
+        );
         assert_eq!(write.fs.mode, FsMode::WorkspaceWrite);
         assert_eq!(write.fs.write, [PathBuf::from("/t")]);
         assert_eq!(write.fs.deny_read, [PathBuf::from("/s")]);
         assert!(write.fs.protect_git);
-        let hidden = policy(&parse(&args(&["run", "--deny-read", "/s", "--", "x"])).expect("parses"));
+        let hidden =
+            policy(&parse(&args(&["run", "--deny-read", "/s", "--", "x"])).expect("parses"));
         assert_eq!(hidden.fs.mode, FsMode::ReadOnly);
         let open = policy(&parse(&args(&["run", "--", "x"])).expect("parses"));
         assert_eq!(open.fs.mode, FsMode::Off);
