@@ -102,13 +102,14 @@ and security checks; passing the existing suite alone does not qualify them.
 
 ## research
 
-Insi owns research decisions. Watchman provides shared research tools, rather
-than a separate agenda or task queue. To enable the connection, add this optional
-field to the trusted heartbeat plan:
+Insi owns research decisions. The Incord engine provides the shared `research`
+tool, the same research every agent and Watchman use, rather than a separate
+agenda or task queue. To enable the connection, add this optional field to the
+trusted heartbeat plan:
 
 ```json
 "research": {
-  "sources": ["github", "hackernews"],
+  "sources": ["auto", "hf", "github", "hackernews"],
   "max_queries": 2,
   "days": 30,
   "limit": 3
@@ -119,15 +120,17 @@ Before planning fresh development tasks, Insi's configured proposer inspects the
 project and observations, then selects questions, sources and project-specific
 purposes. It may decide no research is needed. Every question must cite exact
 excerpts from committed source or documentation. Insi validates the entire batch
-before any search runs, then calls Watchman's existing `inbrowse.social_search`
-through the local Incord engine. Only GitHub and Hacker News searches are enabled
-by this adapter; the other paper/model/package APIs are not connected here.
+before any search runs, then calls the engine's `research` tool through the local
+Incord engine. A plan may name 1..8 of its public sources: `auto` (the engine
+picks by the question), `hf` (all of Hugging Face) and its parts, `web`, `github`,
+`hackernews`, `reddit`, `youtube`, `x`, `polymarket`, `github-repos`,
+`semantic-scholar`, `openalex`, `arxiv`, `crates`, `npm`, `pypi`.
 The operator permits sources; Insi chooses among them. Limits are 1..3 questions,
 1..5 results per question, and a 1..365 day window. No credentials or paid API
-keys are supplied by Insi. Search terms must use public technical vocabulary,
-not private code, secrets or logs.
+keys are supplied by Insi (the engine holds the owner's own). Search terms must
+use public technical vocabulary, not private code, secrets or logs.
 
-The existing local engine and Inbrowse plugin must be running and enabled.
+The local engine must be running.
 `INCORD_MEMORY_ADDR` selects a loopback engine address (default
 `127.0.0.1:9180`). Each shared tool call uses the existing bounded memory adapter
 deadline. No extra research service or model dependency is installed; question

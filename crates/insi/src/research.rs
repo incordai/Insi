@@ -1,4 +1,5 @@
-//! Insi chooses questions; Watchman's shared research tools return untrusted evidence.
+//! Insi chooses questions; the Incord engine's shared `research` tool returns untrusted evidence. It is the same
+//! research every agent and Watchman use (the owner, 2026-11-17), so Insi reads every public source it serves.
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Component, Path};
@@ -31,19 +32,51 @@ struct Questions {
     queries: Vec<Question>,
 }
 
+/// The engine `research` tool's public sources a policy may name (its own list, `agents/research`): `auto` lets the
+/// engine pick by the question, `hf` is all of Hugging Face. Sources that need an address (a thread's comments, a
+/// video's transcript) are left out: Insi's questions are search terms.
+pub const SOURCES: &[&str] = &[
+    "auto",
+    "hf",
+    "web",
+    "github",
+    "hackernews",
+    "reddit",
+    "youtube",
+    "x",
+    "polymarket",
+    "github-repos",
+    "hf-models",
+    "hf-datasets",
+    "hf-spaces",
+    "hf-papers",
+    "hf-paper-search",
+    "semantic-scholar",
+    "openalex",
+    "arxiv",
+    "crates",
+    "npm",
+    "pypi",
+];
+/// The engine tool Insi calls, through the memory server's `incord_call`.
+pub const TOOL: &str = "research";
+
 /// Reject unsupported or excessive research policy before any model or network call.
 pub fn validate(policy: &Policy) -> Result<(), String> {
     if policy.sources.is_empty()
-        || policy.sources.len() > 2
+        || policy.sources.len() > 8
         || policy
             .sources
             .iter()
-            .any(|s| !matches!(s.as_str(), "github" | "hackernews"))
+            .any(|s| !SOURCES.contains(&s.as_str()))
         || !(1..=3).contains(&policy.max_queries)
         || !(1..=365).contains(&policy.days)
         || !(1..=5).contains(&policy.limit)
     {
-        return Err("research needs github/hackernews sources, max_queries 1..3, days 1..365 and limit 1..5".into());
+        return Err(format!(
+            "research needs 1..8 sources from {}, max_queries 1..3, days 1..365 and limit 1..5",
+            SOURCES.join(", ")
+        ));
     }
     Ok(())
 }
@@ -108,11 +141,13 @@ pub fn gather(
         }
     }
     let mut results = Vec::new();
-    // Only this fixed read-only tool is callable; model text cannot select arbitrary tools or commands.
+    // Only this fixed read-only tool is callable; model text cannot select arbitrary tools or commands. The engine
+    // answers { source, query, rows, note }: the rows are the evidence, the note says they are data.
     for q in selected.queries {
-        let args = json!({"source":q.source,"query":q.query,"days":policy.days,"limit":policy.limit,"sort":"relevance"});
-        let response = match search("inbrowse.social_search", args) {
-            Ok(v) if v.is_object() && v["items"].is_array() && v.get("error").is_none() => {
+        let args =
+            json!({"source":q.source,"query":q.query,"days":policy.days,"limit":policy.limit});
+        let response = match search(TOOL, args) {
+            Ok(v) if v.is_object() && v["rows"].is_array() && v.get("error").is_none() => {
                 json!({"status":"available","data":v})
             }
             Ok(v) => json!({"status":"unavailable","response":v}),
@@ -121,4 +156,39 @@ pub fn gather(
         results.push(json!({"source":q.source,"query":q.query,"purpose":q.purpose,"evidence":q.evidence,"response":response}));
     }
     Ok(json!({"untrusted":true,"reason":selected.reason,"results":results}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy(sources: &[&str]) -> Policy {
+        Policy {
+            sources: sources.iter().map(|s| s.to_string()).collect(),
+            max_queries: 2,
+            days: 30,
+            limit: 5,
+        }
+    }
+
+    /// **THE ENGINE'S SOURCES ARE ALLOWED, AN UNKNOWN ONE IS NOT.** Insi asks the same research every agent uses, so
+    /// a policy may name any public source the engine serves (Hugging Face, packages, papers, discussion, the web).
+    #[test]
+    fn a_policy_may_name_the_engines_sources_and_nothing_else() {
+        assert!(validate(&policy(&["auto"])).is_ok());
+        assert!(validate(&policy(&[
+            "hf",
+            "npm",
+            "crates",
+            "github",
+            "hackernews",
+            "arxiv"
+        ]))
+        .is_ok());
+        let why = validate(&policy(&["shodan"])).unwrap_err();
+        assert!(why.contains("hackernews") && why.contains("hf"), "{why}");
+        assert!(validate(&policy(&["web"; 9])).is_err(), "at most 8 sources");
+        assert!(validate(&policy(&[])).is_err(), "at least one");
+        assert_eq!(TOOL, "research");
+    }
 }
