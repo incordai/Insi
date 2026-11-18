@@ -115,10 +115,11 @@ pub(crate) fn main(args: &[String]) -> ExitCode {
             return exit(EXIT_SANDBOX);
         }
     };
-    let (program, rest) = request
-        .command
-        .split_first()
-        .expect("parse refuses an empty command");
+    // `parse` refuses an empty command; an empty one reaching here is still a refusal, never a panic.
+    let Some((program, rest)) = request.command.split_first() else {
+        eprintln!("insi sandbox: no command to run");
+        return exit(EXIT_SANDBOX);
+    };
     let rest: Vec<OsString> = rest.iter().map(OsString::from).collect();
     match sandbox.run(program, &rest, &cwd) {
         Ok(outcome) => exit(outcome.code()),
