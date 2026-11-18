@@ -16,9 +16,25 @@ pub const CONFIG_ENV: &str = "INSI_CONFIG";
 /// What a worker command must contain: where the task's prompt goes.
 pub const PROMPT: &str = "{prompt}";
 
+/// Who Insi publishes branches and draft pull requests as (`hub` in the config).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HubKind {
+    /// The person's own GitHub login, through the `gh` CLI and `git push`. The default.
+    #[default]
+    Gh,
+    /// The owner's GitHub App, through the Incord memory engine's GitHub tools: the pull request shows the app as
+    /// its author and Insi uses no login of its own. With no engine, or an engine with no app set up, Insi stops
+    /// with the reason; it never falls back to `gh`.
+    App,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Who publishes: `"gh"` (the default) or `"app"` ([`HubKind`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubKind>,
     /// The topic lessons for this repo are filed under (`rust/incord/...`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
@@ -697,6 +713,22 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WHO PUBLISHES IS A SETTING, `gh` unless said otherwise, and only the two names exist: a misspelt hub is
+    /// refused when the config is read, never read as `gh`.
+    #[test]
+    fn the_hub_is_gh_unless_the_config_names_the_app() {
+        assert_eq!(Config::parse("").expect("empty").hub, None, "unset is the default, gh");
+        assert_eq!(Config::parse("hub = \"gh\"").expect("gh").hub, Some(HubKind::Gh));
+        assert_eq!(Config::parse("hub = \"app\"").expect("app").hub, Some(HubKind::App));
+        assert_eq!(HubKind::default(), HubKind::Gh);
+        for bad in ["hub = \"App2\"", "hub = \"github\"", "hub = true"] {
+            assert!(Config::parse(bad).is_err(), "{bad}");
+        }
+        let written = Config { hub: Some(HubKind::App), ..Config::default() }.to_toml().expect("toml");
+        assert!(written.contains("hub = \"app\""), "{written}");
+        assert!(!Config::default().to_toml().expect("toml").contains("hub"), "unset is not written");
+    }
 
     #[test]
     fn a_full_config_reads_and_unknown_keys_are_refused() {

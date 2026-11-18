@@ -257,6 +257,9 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
         return serde_json::to_value(queue).map_err(|e| e.to_string());
     }
     let config = Config::load(&repo)?;
+    if !flags.has("local") {
+        crate::issue::gh_hub_only(&config, "insi heartbeat")?;
+    }
     if config.test_cmd.is_empty() {
         return Err("heartbeat requires configured test_cmd".into());
     }

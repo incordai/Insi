@@ -176,10 +176,7 @@ fn propose_in(
             ),
         });
     }
-    git(
-        tree,
-        &["push", "--quiet", "--set-upstream", "origin", branch],
-    )?;
+    hub.push(tree, branch)?;
     let body = format!(
         "Insi's improvement loop found this harness better than `{start}` on the benchmark.\n\
          **Review it before merging — nothing here is merged automatically.**\n\n\
@@ -362,6 +359,64 @@ mod tests {
         assert!(open(&same, &hub)
             .expect_err("unchanged")
             .contains("nothing to propose"));
+    }
+
+    /// **WITH THE APP HUB THE ENGINE PUSHES THE HARNESS BRANCH, NOT THE PERSON'S GIT LOGIN**: the branch reaches
+    /// origin only through the engine's `github_push` (the stand-in does that push), before the draft is opened
+    /// through `github_pr_open`; a refused push opens no draft.
+    #[test]
+    fn the_app_hub_pushes_the_harness_through_the_engine() {
+        use crate::issue::AppHub;
+        let (work, origin) = repo();
+        let folder = work.join("agent/harness");
+        let start = Harness::read(&folder).expect("start");
+        let best = start.with("prompt.md", "Name the markers the checks look for.\n");
+        let branch = branch_for(&best);
+        let pushing = |refuse: bool| {
+            crate::engine_stub::start(move |tool, args| match tool {
+                "github_default_branch" => Ok(serde_json::json!({"repo": "o/r", "branch": "main"})),
+                "github_push" if refuse => Err("push refused: the app lacks Contents write".to_string()),
+                "github_push" => {
+                    let tree = args["cwd"].as_str().ok_or("no cwd")?;
+                    let branch = args["branch"].as_str().ok_or("no branch")?;
+                    git(Path::new(tree), &["push", "--quiet", "origin", branch])
+                        .map(|_| serde_json::json!({"pushed": true}))
+                }
+                "github_pr_open" => Ok(serde_json::json!({"url": "https://github.com/o/r/pull/3", "draft": true})),
+                other => Err(format!("unknown tool: '{other}'")),
+            })
+        };
+        let pr = HarnessPr {
+            harness: &folder,
+            start: &start,
+            best: &best,
+            kept: &[],
+            audit: Path::new("audit.jsonl"),
+            work_root: &temp("app-root"),
+        };
+
+        let refused = pushing(true);
+        let why = open(&pr, &AppHub::at(refused.addr)).expect_err("refused");
+        assert!(why.contains("hub = \"app\"") && why.contains("Contents write"), "{why}");
+        assert!(!refused.tools().contains(&"github_pr_open".to_string()), "no draft without the push");
+        assert!(
+            git(&origin, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err(),
+            "Insi pushed nothing itself"
+        );
+        // The refused branch is kept locally, so the person can look at it: a second try is told so.
+        git(&work, &["branch", "-D", &branch]).expect("forget the kept branch");
+
+        let engine = pushing(false);
+        let opened = open(&pr, &AppHub::at(engine.addr)).expect("opened");
+        assert_eq!(
+            opened,
+            Outcome::Opened { url: "https://github.com/o/r/pull/3".into(), branch: branch.clone() }
+        );
+        assert_eq!(engine.tools(), ["github_default_branch", "github_push", "github_pr_open"]);
+        assert_eq!(engine.last("github_pr_open")["head"], branch.as_str());
+        assert!(git(&origin, &["show", &format!("{branch}:agent/harness/prompt.md")])
+            .expect("pushed")
+            .contains("Name the markers"));
     }
 
     /// **A HARNESS WITH A CREDENTIAL IN IT IS NEVER PUSHED.**

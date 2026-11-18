@@ -43,6 +43,8 @@ mod autonomous;
 mod benchmark;
 mod context;
 mod doctor;
+#[cfg(test)]
+mod engine_stub;
 mod experiment;
 mod harness_pr;
 mod heartbeat;
@@ -727,6 +729,9 @@ fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
     let repo =
         std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
     let config = Config::load(&repo)?;
+    if !flags.has("local") {
+        issue::gh_hub_only(&config, "insi suggest")?;
+    }
     let worker = if flags.has("worker") {
         Worker::command(flags.argv("worker"))
     } else {
@@ -814,7 +819,7 @@ fn issue_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
             briefing: &briefing,
             draft: !flags.has("ready"),
         },
-        &issue::GhCli,
+        issue::hub_for(&config)?.as_ref(),
     )?;
     match outcome {
         issue::Outcome::Opened { url, branch } => {
@@ -1311,7 +1316,7 @@ fn improve_cmd(flags: &Flags, work: &Work, results: &Path) -> Result<(), String>
                     audit: &ld.audit(),
                     work_root: &work.root,
                 },
-                &issue::GhCli,
+                issue::hub_for(&config)?.as_ref(),
             )?;
             match opened {
                 issue::Outcome::Opened { url, branch } => {
