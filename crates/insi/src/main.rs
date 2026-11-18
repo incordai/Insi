@@ -729,9 +729,7 @@ fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
     let repo =
         std::fs::canonicalize(flags.get("repo").unwrap_or(".")).map_err(|e| e.to_string())?;
     let config = Config::load(&repo)?;
-    if !flags.has("local") {
-        issue::gh_hub_only(&config, "insi suggest")?;
-    }
+    let hub = issue::hub_for(&config)?;
     let worker = if flags.has("worker") {
         Worker::command(flags.argv("worker"))
     } else {
@@ -768,9 +766,9 @@ fn suggest_cmd(flags: &Flags, work: &Work) -> Result<(), String> {
         audit_finding: flags.get("audit-finding"),
     };
     let outcome = if memory.is_some() {
-        suggest::run_with_memory(&options, &issue::GhCli, memory)
+        suggest::run_with_memory(&options, hub.as_ref(), memory)
     } else {
-        suggest::run(&options, &issue::GhCli)
+        suggest::run(&options, hub.as_ref())
     }?;
     println!(
         "{}",

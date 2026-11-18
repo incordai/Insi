@@ -41,6 +41,51 @@ pub trait Hub {
         )
         .map(|_| ())
     }
+
+    /// Whether the hosting service's `base` has moved on from `measured`, the commit an experiment was run on: the
+    /// default asks `origin` with the person's own git (`git ls-remote`). Called by `suggest::work` before it
+    /// publishes.
+    fn base_moved(&self, repo: &Path, base: &str, measured: &str) -> Result<bool, String> {
+        let at = git(
+            repo,
+            &["ls-remote", "origin", &format!("refs/heads/{base}")],
+        )?;
+        Ok(at.split_whitespace().next() != Some(measured))
+    }
+
+    /// Fail now, before work is spent, when this hub could not publish. Nothing by default; [`AppHub`] asks the
+    /// engine, so an engine that is not running or has no app stops `insi suggest` before its experiment. Called
+    /// by `suggest::run_with_memory`.
+    fn preflight(&self, _repo: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Publish the committed `branch` of `clone`, a clone of `repo` that Insi made for an experiment (its `origin` is
+    /// the local `repo`, not the hosting service), so a pull request can name it. By default a push from the clone to
+    /// `remote`, the address of the repository's own origin, with the person's own git. Called by `suggest::work`,
+    /// after the credential scan.
+    fn publish_clone(
+        &self,
+        clone: &Path,
+        _repo: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<(), String> {
+        // To the operator's own origin URL, not the clone's `origin`: `remote set-url` changed only `remote.origin.url`
+        // and left any `pushurl` in place, and it would now also trip the .git guard. `--no-verify` skips a pre-push
+        // hook as a second line of defence.
+        git(
+            clone,
+            &[
+                "push",
+                "--quiet",
+                "--no-verify",
+                remote,
+                &format!("HEAD:refs/heads/{branch}"),
+            ],
+        )
+        .map(|_| ())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +299,53 @@ impl Hub for AppHub {
         )
         .map(|_| ())
     }
+
+    /// The engine does not read the repository's refs, and the person's own git login is the thing this hub
+    /// replaces, so the base is not looked at: a pull request is a diff a person reads against whatever the base is.
+    fn base_moved(&self, _repo: &Path, _base: &str, _measured: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    fn preflight(&self, repo: &Path) -> Result<(), String> {
+        self.default_branch(repo).map(|_| ())
+    }
+
+    /// IN TWO STEPS, THE FIRST WITH NO CREDENTIALS: (1) the branch is pushed from the clone into the person's local
+    /// `repo`, whose `origin` is the GitHub repository (a local push: the clone's `origin` IS that repository); (2)
+    /// the engine pushes it from there as the GitHub App ([`Self::push`]). A branch that already exists in `repo` is
+    /// refused, so nothing of the person's is touched. If step 2 is refused, the branch just made in `repo` is
+    /// removed again, and the engine's reason is the error: neither the repository nor the origin keeps it.
+    fn publish_clone(
+        &self,
+        clone: &Path,
+        repo: &Path,
+        _remote: &str,
+        branch: &str,
+    ) -> Result<(), String> {
+        let name = format!("refs/heads/{branch}");
+        if git(repo, &["rev-parse", "--verify", "--quiet", &name]).is_ok() {
+            return Err(format!(
+                "branch {branch} already exists in {}: look at that branch first",
+                repo.display()
+            ));
+        }
+        git(
+            clone,
+            &[
+                "push",
+                "--quiet",
+                "--no-verify",
+                &repo.display().to_string(),
+                &format!("HEAD:{name}"),
+            ],
+        )?;
+        if let Err(why) = self.push(repo, branch) {
+            // Only the branch this call just made.
+            let _ = git(repo, &["branch", "-D", branch]);
+            return Err(why);
+        }
+        Ok(())
+    }
 }
 
 /// The hub the config names: `gh` (the default) or the GitHub App through the engine. An unreachable engine, or
@@ -263,18 +355,6 @@ pub fn hub_for(config: &Config) -> Result<Box<dyn Hub>, String> {
     match config.hub.unwrap_or_default() {
         insi_core::config::HubKind::Gh => Ok(Box::new(GhCli)),
         insi_core::config::HubKind::App => Ok(Box::new(AppHub::connect()?)),
-    }
-}
-
-/// Refuse `what` when the config names the app hub: it publishes from a clone the engine cannot push (its
-/// `origin` is the local repository, not a github.com address), so it keeps `gh`'s login. The refusal is the
-/// reason and the way out; nothing falls back silently. Called by `suggest_cmd` and the autonomous cycle.
-pub fn gh_hub_only(config: &Config, what: &str) -> Result<(), String> {
-    match config.hub.unwrap_or_default() {
-        insi_core::config::HubKind::Gh => Ok(()),
-        insi_core::config::HubKind::App => Err(format!(
-            "{what} publishes from a clone, which the app hub cannot push: set hub = \"gh\" in .insi/config.toml for it, or use --local"
-        )),
     }
 }
 
@@ -1115,10 +1195,9 @@ mod tests {
         );
     }
 
-    /// WHO PUBLISHES IS THE CONFIG'S CHOICE: `gh` unless it says `app`, and the flows that publish from a
-    /// clone, which the engine cannot push, refuse `app` instead of using the person's login.
+    /// WHO PUBLISHES IS THE CONFIG'S CHOICE: `gh` unless it says `app`.
     #[test]
-    fn the_hub_follows_the_config_and_clone_flows_refuse_the_app() {
+    fn the_hub_follows_the_config() {
         assert!(hub_for(&Config::default()).is_ok());
         assert!(hub_for(&Config {
             hub: Some(insi_core::config::HubKind::Gh),
@@ -1129,11 +1208,125 @@ mod tests {
             hub_for(&app_config()).is_ok(),
             "connecting calls nothing; the first call says"
         );
-        assert!(gh_hub_only(&Config::default(), "insi suggest").is_ok());
-        let why = gh_hub_only(&app_config(), "insi suggest").expect_err("refused");
+    }
+
+    /// A clone of `work` as `insi suggest` makes it (`--no-local`, so its `origin` is `work`), on a new branch one
+    /// commit ahead.
+    fn clone_with_branch(work: &Path, branch: &str) -> PathBuf {
+        let clone = temp("clone").join("candidate");
+        git(
+            work,
+            &[
+                "clone",
+                "--quiet",
+                "--no-local",
+                &work.display().to_string(),
+                &clone.display().to_string(),
+            ],
+        )
+        .expect("clone");
+        for (k, v) in [("user.email", "t@example.invalid"), ("user.name", "t")] {
+            git(&clone, &["config", k, v]).expect("config");
+        }
+        git(&clone, &["checkout", "--quiet", "-b", branch]).expect("branch");
+        std::fs::write(clone.join("greet.txt"), "[greeting]\n\ttext = hello\n").expect("w");
+        git(&clone, &["commit", "--quiet", "-am", "improve"]).expect("commit");
+        clone
+    }
+
+    fn has_branch(repo: &Path, branch: &str) -> bool {
+        git(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .is_ok()
+    }
+
+    /// **`insi suggest` PUBLISHES THROUGH THE APP, IN TWO STEPS**: the branch goes from the clone into the person's
+    /// local repository (no credentials: the clone's origin IS that repository), then the engine pushes it from
+    /// there as the app, so it lands in the repository's origin (the bare stand-in for GitHub). The engine is
+    /// asked in the person's repository, not the clone.
+    #[test]
+    fn a_clone_is_published_through_the_local_repository_and_the_engine() {
+        let (work, origin) = repo();
+        let branch = "insi/suggest-1-2";
+        let clone = clone_with_branch(&work, branch);
+        let stand_in = engine(None);
+        let hub = AppHub::at(stand_in.addr);
+        hub.preflight(&work).expect("the engine answers");
+        assert!(!hub.base_moved(&work, "main", "abc").expect("not looked at"));
+
+        hub.publish_clone(&clone, &work, "git@github.com:o/r.git", branch)
+            .expect("published");
         assert!(
-            why.contains("insi suggest") && why.contains("hub = \"gh\""),
-            "{why}"
+            has_branch(&work, branch),
+            "step 1: the branch is in the person's repository"
         );
+        assert!(
+            has_branch(&origin, branch),
+            "step 2: the engine pushed it to the origin"
+        );
+        let push = stand_in.last("github_push");
+        assert_eq!(push["branch"], branch);
+        assert_eq!(
+            push["cwd"].as_str().map(PathBuf::from),
+            Some(work.clone()),
+            "the engine pushes from the repository whose origin is GitHub, never the clone"
+        );
+        assert!(git(&origin, &["show", &format!("{branch}:greet.txt")])
+            .expect("pushed")
+            .contains("hello"));
+    }
+
+    /// **A REFUSED PUSH LEAVES NEITHER THE LOCAL REPOSITORY NOR THE ORIGIN WITH THE BRANCH**: the branch step 1 made
+    /// in the person's repository is removed again, nothing else of theirs is touched, and the engine's reason is
+    /// the error. A branch that was already there is refused before anything is pushed or removed.
+    #[test]
+    fn a_refused_publish_removes_the_branch_it_made_and_keeps_what_was_there() {
+        let (work, origin) = repo();
+        let branch = "insi/suggest-3-4";
+        let clone = clone_with_branch(&work, branch);
+        let denied = "the push of insi/suggest-3-4 to o/r failed: denied; the GitHub App must be installed on o/r with Contents and Pull requests write permission";
+        let stand_in = engine(Some(("github_push", denied)));
+        let hub = AppHub::at(stand_in.addr);
+        let why = hub
+            .publish_clone(&clone, &work, "git@github.com:o/r.git", branch)
+            .expect_err("refused");
+        assert!(why.contains("Contents and Pull requests write"), "{why}");
+        assert!(
+            !has_branch(&work, branch),
+            "the local repository does not keep it"
+        );
+        assert!(!has_branch(&origin, branch), "and neither does the origin");
+        assert!(
+            has_branch(&work, "main"),
+            "the person's own branches are untouched"
+        );
+
+        // A branch of that name already in the person's repository: refused, and NOT removed.
+        git(&work, &["branch", branch]).expect("theirs");
+        let calls = stand_in.tools().len();
+        let why = AppHub::at(stand_in.addr)
+            .publish_clone(&clone, &work, "git@github.com:o/r.git", branch)
+            .expect_err("exists");
+        assert!(why.contains("already exists"), "{why}");
+        assert!(has_branch(&work, branch), "theirs is kept");
+        assert_eq!(stand_in.tools().len(), calls, "the engine was never asked");
+    }
+
+    /// With no app the preflight says so at once, so `insi suggest` stops before its experiment.
+    #[test]
+    fn the_preflight_names_the_engines_reason() {
+        let off = "GitHub is not set up on this engine: set github_app_id in the audit settings";
+        let stand_in = engine(Some(("github_default_branch", off)));
+        let why = AppHub::at(stand_in.addr)
+            .preflight(Path::new("/r"))
+            .expect_err("refused");
+        assert!(why.contains("hub = \"app\"") && why.contains(off), "{why}");
     }
 }

@@ -107,6 +107,10 @@ pub fn run_with_memory(
     if !git(o.repo, &["status", "--porcelain"])?.is_empty() {
         return Err("commit or stash repository changes before suggesting improvements; only committed working code is measured".into());
     }
+    // A hub that cannot publish says so now, before the experiment's time and tokens are spent.
+    if !o.local {
+        hub.preflight(o.repo)?;
+    }
     let base = git(o.repo, &["symbolic-ref", "--short", "HEAD"])?;
     let original = git(o.repo, &["rev-parse", "HEAD"])?;
     let stamp = SystemTime::now()
@@ -584,30 +588,15 @@ fn work(
         );
     }
     let remote = git(o.repo, &["remote", "get-url", "origin"])?;
-    let remote_base = git(
-        o.repo,
-        &["ls-remote", "origin", &format!("refs/heads/{base}")],
-    )?;
-    if remote_base.split_whitespace().next() != Some(original) {
+    if hub.base_moved(o.repo, base, original)? {
         return Ok(kept(
             dir,
             "remote PR base differs from the measured commit; update the source branch and rerun",
         ));
     }
-    // Push to the operator's own origin URL given on the command line, not to
-    // the clone's `origin`: `remote set-url` changed only `remote.origin.url`
-    // and left any `pushurl` in place, and it would now also trip the .git
-    // guard. `--no-verify` skips a pre-push hook as a second line of defence.
-    git(
-        &candidate,
-        &[
-            "push",
-            "--quiet",
-            "--no-verify",
-            &remote,
-            &format!("HEAD:refs/heads/{branch}"),
-        ],
-    )?;
+    // The hub publishes the branch: by default a push to the operator's own origin URL from the clone
+    // ([`Hub::publish_clone`]), as the GitHub App through the engine for `hub = "app"`.
+    hub.publish_clone(&candidate, o.repo, &remote, branch)?;
     let url = hub.create_pr(
         o.repo,
         &NewPr {
