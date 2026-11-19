@@ -380,10 +380,12 @@ fn a_job_for_another_os_runs_here_only_when_asked() {
     } else {
         "windows-latest"
     };
+    // `shell: bash`, which every machine running this has: a Windows job's default shell is PowerShell, which a Mac
+    // without it reports as unavailable (the Mac, 2026-11-19), and that is right, not what this test is about.
     write_workflow(
         &repo,
         "ci.yml",
-        &format!("on: [push]\njobs:\n  spelling:\n    runs-on: {elsewhere}\n    steps:\n      - name: says hello\n        run: echo hello\n"),
+        &format!("on: [push]\njobs:\n  spelling:\n    runs-on: {elsewhere}\n    steps:\n      - name: says hello\n        shell: bash\n        run: echo hello\n"),
     );
     let mut opts = options(&repo);
     let report = quiet_run(&opts);
