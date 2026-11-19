@@ -227,6 +227,29 @@ fn a_step_that_would_publish_or_push_is_never_run() {
     }
 }
 
+/// WHAT A DEVELOPER'S MACHINE KEEPS IS NEVER CHANGED: a CI runner is thrown away, a developer's machine is not (Insi's
+/// own CI sets `git config --global user.email`, which would sign every later commit with the CI's address).
+#[test]
+fn a_step_that_would_change_the_machine_is_never_run() {
+    for script in [
+        "git config --global user.email \"ci@example.invalid\"",
+        "sudo apt-get install -y jq",
+        "brew install ripgrep",
+        "npm install -g pnpm",
+        "echo x\nrustup default nightly",
+    ] {
+        assert!(would_change_machine(script).is_some(), "{script}");
+    }
+    for script in [
+        "git config user.email ci@example.invalid",
+        "cargo test",
+        "npm install",
+        "# sudo is only a comment\necho ok",
+    ] {
+        assert_eq!(would_change_machine(script), None, "{script}");
+    }
+}
+
 /// A working directory stays inside the repository.
 #[test]
 fn a_working_directory_cannot_leave_the_repository() {

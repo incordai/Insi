@@ -303,11 +303,13 @@ fn operand(text: &str, ctx: &Context<'_>) -> Option<String> {
     if t == "true" || t == "false" || t.parse::<f64>().is_ok() {
         return Some(t.to_string());
     }
+    // A matrix or env key the workflow does not set is empty, as GitHub evaluates it (null), so
+    // `matrix.missing || 'default'` is 'default'. What this machine cannot know (a secret, a step's output) stays None.
     if let Some(key) = t.strip_prefix("matrix.") {
-        return ctx.matrix.get(key).cloned();
+        return Some(ctx.matrix.get(key).cloned().unwrap_or_default());
     }
     if let Some(key) = t.strip_prefix("env.") {
-        return ctx.env.get(key).cloned();
+        return Some(ctx.env.get(key).cloned().unwrap_or_default());
     }
     match t {
         "runner.os" => Some(runner_os_name(ctx.os).to_string()),
@@ -525,6 +527,37 @@ fn would_publish(script: &str) -> Option<&'static str> {
         }
         if let Some(found) = PUBLISHING.iter().find(|p| l.contains(*p)) {
             return Some(found);
+        }
+    }
+    None
+}
+
+/// A script's reason not to be run on a developer's machine: it would change the machine's own setup, which a CI
+/// runner throws away and a developer keeps (a `git config --global user.email` step would sign every later commit
+/// of theirs with the CI's address).
+fn would_change_machine(script: &str) -> Option<&'static str> {
+    const MACHINE: [&str; 13] = [
+        "git config --global",
+        "git config --system",
+        "sudo ",
+        "apt-get install",
+        "apt install",
+        "brew install",
+        "choco install",
+        "winget install",
+        "npm install -g",
+        "npm install --global",
+        "npm i -g",
+        "rustup default",
+        "corepack enable",
+    ];
+    for line in script.lines() {
+        let l = line.trim().to_ascii_lowercase();
+        if l.starts_with('#') {
+            continue;
+        }
+        if let Some(found) = MACHINE.iter().find(|p| l.contains(*p)) {
+            return Some(found.trim_end());
         }
     }
     None
@@ -856,6 +889,11 @@ fn run_job(
             result.steps.push(record);
             continue;
         }
+        if let Some(what) = would_change_machine(script) {
+            record.reason = format!("it would change this machine's own setup (`{what}`): only a CI runner, which is thrown away, runs it");
+            result.steps.push(record);
+            continue;
+        }
         let script = match expand(script, &ctx) {
             Ok(s) => s,
             Err(why) => {
@@ -992,7 +1030,11 @@ pub fn run(options: &Options, say: &mut dyn FnMut(&str)) -> Report {
             .notes
             .push("no workflows found in .github/workflows".into());
     }
-    let scratch = std::env::temp_dir().join(format!("insi-ci-{}", std::process::id()));
+    // A folder of this run's own: two runs in one process (tests run side by side, or a host that runs two repos)
+    // never share it, so one's cleanup never removes the other's step scripts.
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch = std::env::temp_dir().join(format!("insi-ci-{}-{nth}", std::process::id()));
     let mut run = Run {
         options,
         scratch: scratch.clone(),
