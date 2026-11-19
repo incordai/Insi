@@ -785,18 +785,25 @@ system (a `${{ matrix.os }}` is expanded) it runs every `run:` step in order,
 in the repository, with the step's shell, `env:` and working directory, and
 reports each step as `pass`, `FAIL`, `skip` (with why) or `unavailable` (a tool
 the step needs is not installed here). It exits 1 when a step failed;
-`--strict` also fails on an unavailable one.
+`--strict` also fails on an unavailable one. `--all-jobs` runs every job, not
+only this operating system's: a job meant for another one runs here as its
+runner would (its shell, its `runner.os`). A check GitHub runs as an action runs
+as its own tool, with the step's `with:` inputs: `crate-ci/typos` as `typos`,
+`zizmor-action` as `zizmor --offline`, `cargo-deny-action` as `cargo deny`, and
+`cargo-semver-checks-action` as `cargo semver-checks`.
 
 ```text
-insi ci [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--json] [--quiet] [--strict]
+insi ci [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--all-jobs] [--json] [--quiet] [--strict]
         [--timeout-secs N]
 insi ci --install-hook [--repo <dir>] [--force]
 ```
 
 What it does not do, and says so for each step it passes over: it runs no
-`uses:` action (`actions/checkout` is the repository already in front of it;
-`setup-*` and `rust-toolchain` are the tools installed here; run the tool of a
-scanner action such as `cargo-deny-action` yourself); it runs no job with
+other `uses:` action (`actions/checkout` is the repository already in front of
+it; `setup-*` and `rust-toolchain` are the tools installed here); it never runs a
+step that would change this machine's own setup (`git config --global`, `sudo`,
+system package installs, global npm installs, `rustup default`), which a CI
+runner throws away and a developer keeps; it runs no job with
 `container:` or `services:`; it never runs a step that would publish or push
 (`git push`, `cargo publish`, `npm publish`, `docker push`, `gh release`, and
 the like); it does not run a step whose `${{ ... }}` it cannot resolve (a
@@ -822,7 +829,7 @@ another repository and its work folder.
 
 ```text
 insi doctor   [--repo <dir>] [--work <dir>] [--markdown]
-insi ci       [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--json] [--quiet] [--strict]
+insi ci       [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--all-jobs] [--json] [--quiet] [--strict]
               [--timeout-secs N] | --install-hook [--force]
 insi mine     --source <repo> --tasks <dir> --private <dir> --check "<cmd {tests}>"
               [--setup "<cmd>"] [--public-check "<cmd>"] [--prefix <name>] [--limit N] [--wall-secs N]

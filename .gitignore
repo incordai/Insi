@@ -18,3 +18,5 @@ __pycache__/
 
 # Local agent scratch files and validation tools.
 /.claude/temp/
+# The coverage job's report (`cargo llvm-cov ... --output-path lcov.info`), when CI runs on this machine (`insi ci`).
+/lcov.info

@@ -122,12 +122,15 @@ pub struct Options {
     pub job: Option<String>,
     /// Plan only: say what would run.
     pub list: bool,
+    /// Run every job, not only those whose `runs-on` is this operating system (`--all-jobs`): a job for another one
+    /// runs here as its runner would (its shell, its `runner.os`), and a tool this machine lacks is `unavailable`.
+    pub all_jobs: bool,
     pub timeout: Duration,
 }
 
 // ── The command ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// `insi ci [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--json] [--quiet] [--strict]
+/// `insi ci [--repo <dir>] [--workflow <file>] [--job <id>] [--list] [--all-jobs] [--json] [--quiet] [--strict]
 /// [--timeout-secs N]` and `insi ci --install-hook [--repo <dir>] [--force]`. Called by `main.rs`.
 pub fn command(flags: &crate::Flags) -> Result<(), String> {
     let repo = std::fs::canonicalize(flags.get("repo").unwrap_or("."))
@@ -142,6 +145,7 @@ pub fn command(flags: &crate::Flags) -> Result<(), String> {
         workflow: flags.get("workflow").map(str::to_string),
         job: flags.get("job").map(str::to_string),
         list: flags.has("list"),
+        all_jobs: flags.has("all-jobs"),
         timeout: Duration::from_secs(flags.number("timeout-secs", 1800)?),
     };
     let quiet = flags.has("quiet");
@@ -172,14 +176,9 @@ pub fn command(flags: &crate::Flags) -> Result<(), String> {
 
 // ── The workflows ────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// This machine's operating system as `runs-on` names it: `linux`, `macos` or `windows`.
+/// This machine's operating system as `runs-on` names it: `linux`, `macos` or `windows` (Rust names them the same).
 fn this_os() -> &'static str {
-    match std::env::consts::OS {
-        "linux" => "linux",
-        "macos" => "macos",
-        "windows" => "windows",
-        other => other,
-    }
+    std::env::consts::OS
 }
 
 /// The operating system a `runs-on` label stands for, or `None` for one this cannot tell (a self-hosted runner).
@@ -563,6 +562,55 @@ fn would_change_machine(script: &str) -> Option<&'static str> {
     None
 }
 
+/// A check GitHub runs as an action, as the command its own tool runs here, with the step's `with:` inputs (the
+/// owner, 2026-11-19: "all tests local"; Insi's spelling job failed on GitHub while every step here passed, because
+/// its `crate-ci/typos` action was only ever skipped). `None` for any other action. A tool this machine lacks makes the
+/// step `unavailable`, as for a `run:` step.
+fn check_action(uses: &str, step: &Yaml) -> Option<String> {
+    let name = uses.split('@').next().unwrap_or(uses).to_ascii_lowercase();
+    let with = |key: &str| {
+        step.get("with")
+            .and_then(|w| w.get(key))
+            .and_then(Yaml::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let line = |parts: Vec<String>| {
+        parts
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    match name.as_str() {
+        "crate-ci/typos" => Some(line(vec![
+            "typos".into(),
+            with("files").unwrap_or_default(),
+        ])),
+        "zizmorcore/zizmor-action" => Some(line(vec![
+            "zizmor --offline".into(),
+            with("inputs").unwrap_or_else(|| ".".into()),
+        ])),
+        "embarkstudios/cargo-deny-action" => Some(line(vec![
+            "cargo deny".into(),
+            with("arguments").unwrap_or_default(),
+            with("command").unwrap_or_else(|| "check".into()),
+            with("command-arguments").unwrap_or_default(),
+        ])),
+        "obi1kenobi/cargo-semver-checks-action" => Some(line(vec![
+            "cargo semver-checks".into(),
+            with("package")
+                .map(|p| format!("--package {p}"))
+                .unwrap_or_default(),
+            with("baseline-rev")
+                .map(|b| format!("--baseline-rev {b}"))
+                .unwrap_or_default(),
+        ])),
+        _ => None,
+    }
+}
+
 /// Why an action is not run, in words that tell what to do instead.
 fn action_reason(uses: &str) -> String {
     let name = uses.split('@').next().unwrap_or(uses).to_ascii_lowercase();
@@ -850,12 +898,22 @@ fn run_job(
             seconds: 0.0,
             tail: String::new(),
         };
+        // A check action runs as its tool ([`check_action`]); any other action is GitHub's alone.
+        let mut from_action = None;
         if let Some(uses) = step.get("uses").and_then(Yaml::as_str) {
-            record.reason = action_reason(uses);
-            result.steps.push(record);
-            continue;
+            match check_action(uses, step) {
+                Some(command) => from_action = Some(command),
+                None => {
+                    record.reason = action_reason(uses);
+                    result.steps.push(record);
+                    continue;
+                }
+            }
         }
-        let Some(script) = step.get("run").and_then(Yaml::as_str) else {
+        let Some(script) = from_action
+            .as_deref()
+            .or_else(|| step.get("run").and_then(Yaml::as_str))
+        else {
             record.reason = "it has no run: script".into();
             result.steps.push(record);
             continue;
@@ -926,6 +984,26 @@ fn run_job(
             "GITHUB_WORKSPACE".into(),
             run.options.repo.to_string_lossy().into_owned(),
         );
+        // The files GitHub gives every step to write to (a step summary, outputs, env and path lines), here in this
+        // run's own scratch folder: a step that writes `>> "$GITHUB_OUTPUT"` failed with the variable unset.
+        if std::fs::create_dir_all(&run.scratch).is_ok() {
+            for (var, file) in [
+                ("GITHUB_OUTPUT", "github-output"),
+                ("GITHUB_ENV", "github-env"),
+                ("GITHUB_PATH", "github-path"),
+                ("GITHUB_STEP_SUMMARY", "github-step-summary"),
+            ] {
+                let path = run.scratch.join(file);
+                if std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .is_ok()
+                {
+                    step_env.insert(var.into(), path.to_string_lossy().into_owned());
+                }
+            }
+        }
         let shell_name = step
             .get("shell")
             .and_then(Yaml::as_str)
@@ -1139,6 +1217,8 @@ fn run_one(
     let empty_env = BTreeMap::new();
     let mut here: Vec<(BTreeMap<String, String>, String)> = Vec::new();
     let mut elsewhere: Vec<String> = Vec::new();
+    // With --all-jobs, the first combination meant for another operating system, run here as that runner would.
+    let mut other_os: Option<(BTreeMap<String, String>, String, &'static str)> = None;
     for combo in combos {
         let ctx = Context {
             matrix: &combo,
@@ -1150,7 +1230,28 @@ fn run_one(
         let labels: Vec<&str> = label.split_whitespace().collect();
         match labels.iter().find_map(|l| label_os(l)) {
             Some(o) if o == os => here.push((combo, label)),
-            _ => elsewhere.push(label),
+            Some(o) => {
+                if other_os.is_none() {
+                    other_os = Some((combo, label.clone(), o));
+                }
+                elsewhere.push(label);
+            }
+            None => elsewhere.push(label),
+        }
+    }
+    if here.is_empty() && run.options.all_jobs {
+        if let Some((combo, label, target)) = other_os {
+            let mut result = run_job(run, workflow, id, job, &combo, &label, target);
+            let note = format!(
+                "runs on {label} on GitHub; run on this machine ({}) as asked (--all-jobs)",
+                runner_os_name(os)
+            );
+            result.reason = if result.reason.is_empty() {
+                note
+            } else {
+                format!("{}; {note}", result.reason)
+            };
+            return result;
         }
     }
     let Some((combo, label)) = here.first().cloned() else {

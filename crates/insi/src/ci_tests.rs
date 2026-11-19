@@ -44,6 +44,7 @@ fn options(repo: &Path) -> Options {
         workflow: None,
         job: None,
         list: false,
+        all_jobs: false,
         timeout: Duration::from_secs(60),
     }
 }
@@ -263,7 +264,7 @@ fn a_working_directory_cannot_leave_the_repository() {
 /// THIS REPOSITORY'S OWN WORKFLOWS, planned (nothing runs): the push and pull request ones are read, the test job
 /// of `ci.yml` is on this machine with its `cargo fmt --check` step, and the release workflow is left out with why.
 #[test]
-fn this_repositorys_workflows_are_planned() {
+fn this_repository_workflows_are_planned() {
     let repo = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
     let mut opts = options(&repo);
     opts.list = true;
@@ -307,6 +308,99 @@ fn this_repositorys_workflows_are_planned() {
         .iter()
         .flat_map(|j| &j.steps)
         .all(|s| s.seconds == 0.0));
+}
+
+/// THE FILES GITHUB GIVES A STEP: a step that writes its output, a step summary, an env line or a path line passes
+/// here as on GitHub (Insi's coverage summary and semver baseline steps failed with the variables unset).
+#[test]
+fn a_step_writes_to_the_files_github_gives_it() {
+    let repo = fresh("github-files");
+    let runner = match this_os() {
+        "windows" => "windows-latest",
+        "macos" => "macos-latest",
+        _ => "ubuntu-latest",
+    };
+    write_workflow(
+        &repo,
+        "ci.yml",
+        &format!("on: [push]\njobs:\n  report:\n    runs-on: {runner}\n    steps:\n      - name: writes\n        shell: bash\n        run: |\n          echo \"x=1\" >> \"$GITHUB_OUTPUT\"\n          echo \"## done\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"A=1\" >> \"$GITHUB_ENV\"\n          echo \"/tmp\" >> \"$GITHUB_PATH\"\n"),
+    );
+    let report = quiet_run(&options(&repo));
+    assert_eq!(
+        report.jobs[0].steps[0].status,
+        Status::Passed,
+        "{}",
+        render(&report, false)
+    );
+}
+
+/// A CHECK ACTION RUNS AS ITS TOOL (the owner, 2026-11-19: "all tests local"; Insi's spelling job failed on GitHub
+/// while its `crate-ci/typos` action was only ever skipped here): typos, zizmor, cargo-deny and cargo-semver-checks
+/// with their `with:` inputs; any other action is not a check and stays GitHub's.
+#[test]
+fn a_check_action_runs_as_its_tool_and_others_stay_on_github() {
+    let step = |yaml: &str| crate::ci_yaml::parse(yaml).unwrap();
+    let typos = step("uses: crate-ci/typos@v1\n");
+    assert_eq!(
+        check_action("crate-ci/typos@abc", &typos).as_deref(),
+        Some("typos")
+    );
+    let deny = step("uses: EmbarkStudios/cargo-deny-action@v2\nwith:\n  command: check bans licenses\n  arguments: --all-features\n");
+    assert_eq!(
+        check_action("EmbarkStudios/cargo-deny-action@v2", &deny).as_deref(),
+        Some("cargo deny --all-features check bans licenses")
+    );
+    let zizmor = step("uses: zizmorcore/zizmor-action@v0\n");
+    assert_eq!(
+        check_action("zizmorcore/zizmor-action@v0", &zizmor).as_deref(),
+        Some("zizmor --offline .")
+    );
+    let semver =
+        step("uses: obi1kenobi/cargo-semver-checks-action@v2\nwith:\n  package: insi-core\n");
+    assert_eq!(
+        check_action("obi1kenobi/cargo-semver-checks-action@v2", &semver).as_deref(),
+        Some("cargo semver-checks --package insi-core")
+    );
+    for other in [
+        "actions/checkout@v4",
+        "actions/upload-artifact@v4",
+        "some/deploy-action@v1",
+    ] {
+        assert_eq!(check_action(other, &typos), None, "{other}");
+    }
+}
+
+/// EVERY JOB WITH --all-jobs (the owner, 2026-11-19: "add all tests local"): a job GitHub runs on another operating
+/// system is skipped, with why, unless asked; asked, it runs here, says it was asked, and its step passes.
+#[test]
+fn a_job_for_another_os_runs_here_only_when_asked() {
+    let repo = fresh("all-jobs");
+    let elsewhere = if this_os() == "windows" {
+        "ubuntu-latest"
+    } else {
+        "windows-latest"
+    };
+    write_workflow(
+        &repo,
+        "ci.yml",
+        &format!("on: [push]\njobs:\n  spelling:\n    runs-on: {elsewhere}\n    steps:\n      - name: says hello\n        run: echo hello\n"),
+    );
+    let mut opts = options(&repo);
+    let report = quiet_run(&opts);
+    let job = &report.jobs[0];
+    assert_eq!(job.status, Status::Skipped, "{}", render(&report, false));
+    assert!(job.reason.contains("not on this machine"), "{}", job.reason);
+
+    opts.all_jobs = true;
+    let report = quiet_run(&opts);
+    let job = &report.jobs[0];
+    assert!(job.reason.contains("--all-jobs"), "{}", job.reason);
+    assert_eq!(
+        job.steps[0].status,
+        Status::Passed,
+        "{}",
+        render(&report, false)
+    );
 }
 
 /// A REAL RUN: a passing step, the environment of the workflow, job and step, `uses:` and a secret and a push
