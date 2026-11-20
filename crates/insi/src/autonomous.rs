@@ -478,7 +478,25 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
             if output["passed"] != true {
                 return Err("heartbeat planner failed or timed out".into());
             }
-            batch(output["stdout"].as_str().unwrap_or_default())?
+            match batch(output["stdout"].as_str().unwrap_or_default()) {
+                Ok(batch) => batch,
+                // ONE MORE ASK, WITH THE PARSE ERROR (the Mac, 2026-11-20: the plan was right but its JSON carried one
+                // closing brace too many, and the whole run failed on it). Only a second unreadable reply fails.
+                Err(error) => {
+                    let again = format!("{prompt}\n\nYour last reply was not valid JSON ({error}). Reply again with ONLY the JSON object, every brace and bracket matched.");
+                    let retry =
+                        command(&config, &tree, &proposer.render_in(&again, &tree)?, seconds)?;
+                    save(&dir.join("planner-retry.json"), &retry)?;
+                    suggest::ensure_clean(&tree, &baseline, &own)?;
+                    if retry["passed"] != true {
+                        return Err(format!(
+                            "{error}; asked again, the planner failed or timed out"
+                        ));
+                    }
+                    batch(retry["stdout"].as_str().unwrap_or_default())
+                        .map_err(|again| format!("{error}; asked again: {again}"))?
+                }
+            }
         };
         save(&dir.join("planning-decision.json"), &proposed.reason)?;
         merge(&mut queue, proposed, &tree, &baseline, policy.max_tasks)?;

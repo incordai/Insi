@@ -343,6 +343,37 @@ fn due(repo: &Path) -> TestResult<()> {
     Ok(())
 }
 
+/// A planner reply that is not valid JSON is asked for once more, with the parse error, before the run fails.
+#[test]
+fn an_unreadable_plan_is_asked_for_again_once() -> TestResult<()> {
+    // The Mac, 2026-11-20: the planner's JSON carried one closing brace too many and the whole run failed. The first
+    // reply here is that broken JSON, the second a valid plan: the heartbeat asks again with the parse error and goes on.
+    let (root, repo) = fixture(
+        "raise RuntimeError('no development expected')",
+        vec!["python3".into(), "-c".into(), "pass".into()],
+    )?;
+    let count = root.join("planner-count");
+    std::fs::write(
+        root.join("planner.py"),
+        format!(
+            "import json,sys\nfrom pathlib import Path\nc=Path({:?})\nfirst=not c.exists()\nc.write_text((c.read_text() if c.exists() else '')+'planned\\n')\nif first:\n print('{{\"reason\":\"x\",\"tasks\":[]}}}}')\nelse:\n assert 'not valid JSON' in sys.argv[1], 'the second ask names the error'\n print(json.dumps({{'reason':'Nothing to build','tasks':[]}}))\n",
+            count.to_str().ok_or("path")?
+        ),
+    )?;
+    let output = tick(&repo)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&count)?.lines().count(),
+        2,
+        "asked once more, no more"
+    );
+    Ok(())
+}
+
 /// Prove ranking, fail-before/pass-after, regressions, security, delivery, next-task selection and deduplication.
 #[test]
 fn full_cycle_delivers_two_ranked_tasks_without_repeating_them() -> TestResult<()> {
