@@ -159,7 +159,7 @@ fn research_cycle(reply: Value) -> TestResult<(Value, String)> {
         Ok(request)
     });
     let output = Command::new(env!("CARGO_BIN_EXE_insi"))
-        .args(["heartbeat", "--once", "--repo"])
+        .args(["heartbeat", "--once", "--research", "--repo"])
         .arg(&repo)
         .env("INCORD_MEMORY_ADDR", address.to_string())
         .env("GH_HOST", "127.0.0.1")
@@ -234,7 +234,7 @@ fn research_rejects_ungrounded_or_disallowed_questions() -> TestResult<()> {
         let (root, repo) = research_fixture()?;
         std::fs::write(root.join("questions.json"), json!({"reason":"Evaluate testing","queries":[{"source":source,"query":"arithmetic testing","purpose":"Independent checks","evidence":{"calculator.py":excerpt}}]}).to_string())?;
         let output = Command::new(env!("CARGO_BIN_EXE_insi"))
-            .args(["heartbeat", "--once", "--repo"])
+            .args(["heartbeat", "--once", "--research", "--repo"])
             .arg(&repo)
             .env("INCORD_MEMORY_ADDR", "invalid-address")
             .env("GH_HOST", "127.0.0.1")
@@ -267,19 +267,54 @@ fn offline_heartbeat_skips_shared_research() -> TestResult<()> {
     Ok(())
 }
 
-/// Run one due offline cycle using actual CLI orchestration and local delivery.
+/// Run one due offline cycle using actual CLI orchestration and local delivery. With research on (`--research`): the
+/// fixtures' checks all pass, and since 2026-11-20 a heartbeat with nothing failing asks no model unless research is
+/// on (the owner: Insi tests without AI; research proposes new work). Research off: [`tick_without_research`].
 fn tick(repo: &Path) -> TestResult<Output> {
     Ok(Command::new(env!("CARGO_BIN_EXE_insi"))
         .args([
             "heartbeat",
             "--once",
             "--offline",
+            "--research",
             "--interval-secs",
             "1",
             "--repo",
         ])
         .arg(repo)
         .output()?)
+}
+
+/// One due offline cycle with research off, as Insi runs by default (the engine's `insi_research` setting).
+fn tick_without_research(repo: &Path) -> TestResult<Output> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_insi"))
+        .args(["heartbeat", "--once", "--offline", "--interval-secs", "1", "--repo"])
+        .arg(repo)
+        .output()?)
+}
+
+/// Research off and every check passing: the heartbeat tests and records, and calls no model at all (the owner,
+/// 2026-11-19: "Insi does not need AI for testing"). The planner never runs and nothing is queued.
+#[test]
+fn passing_heartbeat_without_research_calls_no_model() -> TestResult<()> {
+    let (root, repo) = fixture(
+        "raise RuntimeError('no development expected')",
+        vec!["python3".into(), "-c".into(), "pass".into()],
+    )?;
+    let output = tick_without_research(&repo)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.join("planner-count").exists(), "the planner model was called");
+    let cycle = std::fs::read_dir(repo.join(".insi-work/heartbeat"))?
+        .next()
+        .ok_or("cycle")??
+        .path();
+    let decision = std::fs::read_to_string(cycle.join("planning-decision.json"))?;
+    assert!(decision.contains("no model called"), "{decision}");
+    Ok(())
 }
 
 /// Read backlog independently and make its next scheduling deadline due without sleeping.

@@ -60,6 +60,9 @@ pub fn run(flags: &Flags) -> Result<(), String> {
             "plan",
             "offline",
             "queue",
+            // Research and new-work proposals on top of testing (autonomous.rs `needs_model`); off by default, the
+            // engine passes it from its `insi_research` setting (Inmem `insi_runner::heartbeat_args`).
+            "research",
         ]
         .contains(&key.as_str())
         {
