@@ -138,6 +138,20 @@ fn remote(repo: &Path, argv: &[&str]) -> Value {
     }
 }
 
+/// Whether this heartbeat has work only a model can do (the owner, 2026-11-19: "Insi does not need AI for
+/// testing; when it has an error it needs AI, when GitHub has an issue it needs AI, when research runs it needs
+/// AI"): a check that failed, an open issue, a CI run that failed, or research asked for. Testing itself, the
+/// project's checks and scans, never calls one, so a heartbeat with nothing wrong costs no model call and cannot
+/// fail on a model that is not reachable.
+fn needs_model(checks: &[Value], issues: &Value, ci: &Value, research_asked: bool) -> bool {
+    let failing_check = checks.iter().any(|check| check["passed"] != true);
+    let open_issue = issues.as_array().is_some_and(|list| !list.is_empty());
+    let failed_ci = ci
+        .as_array()
+        .is_some_and(|runs| runs.iter().any(|run| run["conclusion"] == "failure"));
+    failing_check || open_issue || failed_ci || research_asked
+}
+
 /// Retire stale baselines and mark interrupted work for inspection instead of replaying publication.
 fn reconcile(queue: &mut Queue, baseline: &str) {
     for task in &mut queue.tasks {
@@ -375,13 +389,23 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
             ),
         )
     };
+    // Testing never calls a model; one is asked only when there is something for it (`needs_model`).
+    let research_asked = flags.has("research");
+    let wants_model = flags.has("suggestion") || needs_model(&checks, &issues, &ci, research_asked);
     // Append shared research evidence before the development planner ranks tasks.
     let mut observations = json!({"baseline":baseline,"checks":checks,"project_context":context,"issues":issues,"ci":ci});
     save(&dir.join("observations.json"), &observations)?;
     suggest::ensure_clean(&tree, &baseline, &own)?;
-    if select(&queue, &baseline).is_none() {
+    if select(&queue, &baseline).is_none() && !wants_model {
+        save(
+            &dir.join("planning-decision.json"),
+            &"Every check passed, no issue is open, CI did not fail and no research was asked: no model called.",
+        )?;
+    }
+    if select(&queue, &baseline).is_none() && wants_model {
         // Insi chooses questions only for fresh planning, avoiding repeated research for queued tasks.
-        if let Some(research) = &policy.research {
+        // Research runs only when asked (`--research`), never on every heartbeat.
+        if let Some(research) = policy.research.as_ref().filter(|_| research_asked) {
             let evidence = if flags.has("offline") || flags.has("suggestion") {
                 json!({"status":"skipped","reason":"offline or operator-supplied proposal"})
             } else {
@@ -510,4 +534,32 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
     save(&dir.join("result.json"), &report)?;
     save(&queue_path, &queue)?;
     result
+}
+
+#[cfg(test)]
+mod needs_model_tests {
+    use super::needs_model;
+    use serde_json::json;
+
+    /// The owner, 2026-11-19: testing never calls a model; a passing heartbeat with nothing open asks none.
+    #[test]
+    fn a_heartbeat_with_nothing_wrong_asks_no_model() {
+        let passed = [json!({"passed": true}), json!({"passed": true})];
+        let no_issues = json!([]);
+        let ci_green = json!([{"conclusion": "success"}, {"conclusion": null}]);
+        assert!(!needs_model(&passed, &no_issues, &ci_green, false));
+        // Offline or unreachable GitHub is not something to fix.
+        assert!(!needs_model(&passed, &json!({"unavailable": "offline"}), &json!({"unavailable": "offline"}), false));
+    }
+
+    /// A model is asked only for a failing check, an open issue, a failed CI run, or research asked for.
+    #[test]
+    fn a_failure_an_issue_failed_ci_or_research_asks_one() {
+        let passed = [json!({"passed": true})];
+        let none = json!([]);
+        assert!(needs_model(&[json!({"passed": false})], &none, &none, false));
+        assert!(needs_model(&passed, &json!([{"number": 3, "title": "bug"}]), &none, false));
+        assert!(needs_model(&passed, &none, &json!([{"conclusion": "failure"}]), false));
+        assert!(needs_model(&passed, &none, &none, true));
+    }
 }
