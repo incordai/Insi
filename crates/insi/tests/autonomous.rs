@@ -288,7 +288,14 @@ fn tick(repo: &Path) -> TestResult<Output> {
 /// One due offline cycle with research off, as Insi runs by default (the engine's `insi_research` setting).
 fn tick_without_research(repo: &Path) -> TestResult<Output> {
     Ok(Command::new(env!("CARGO_BIN_EXE_insi"))
-        .args(["heartbeat", "--once", "--offline", "--interval-secs", "1", "--repo"])
+        .args([
+            "heartbeat",
+            "--once",
+            "--offline",
+            "--interval-secs",
+            "1",
+            "--repo",
+        ])
         .arg(repo)
         .output()?)
 }
@@ -307,7 +314,10 @@ fn passing_heartbeat_without_research_calls_no_model() -> TestResult<()> {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!root.join("planner-count").exists(), "the planner model was called");
+    assert!(
+        !root.join("planner-count").exists(),
+        "the planner model was called"
+    );
     let cycle = std::fs::read_dir(repo.join(".insi-work/heartbeat"))?
         .next()
         .ok_or("cycle")??

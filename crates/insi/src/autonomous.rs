@@ -549,7 +549,12 @@ mod needs_model_tests {
         let ci_green = json!([{"conclusion": "success"}, {"conclusion": null}]);
         assert!(!needs_model(&passed, &no_issues, &ci_green, false));
         // Offline or unreachable GitHub is not something to fix.
-        assert!(!needs_model(&passed, &json!({"unavailable": "offline"}), &json!({"unavailable": "offline"}), false));
+        assert!(!needs_model(
+            &passed,
+            &json!({"unavailable": "offline"}),
+            &json!({"unavailable": "offline"}),
+            false
+        ));
     }
 
     /// A model is asked only for a failing check, an open issue, a failed CI run, or research asked for.
@@ -557,9 +562,24 @@ mod needs_model_tests {
     fn a_failure_an_issue_failed_ci_or_research_asks_one() {
         let passed = [json!({"passed": true})];
         let none = json!([]);
-        assert!(needs_model(&[json!({"passed": false})], &none, &none, false));
-        assert!(needs_model(&passed, &json!([{"number": 3, "title": "bug"}]), &none, false));
-        assert!(needs_model(&passed, &none, &json!([{"conclusion": "failure"}]), false));
+        assert!(needs_model(
+            &[json!({"passed": false})],
+            &none,
+            &none,
+            false
+        ));
+        assert!(needs_model(
+            &passed,
+            &json!([{"number": 3, "title": "bug"}]),
+            &none,
+            false
+        ));
+        assert!(needs_model(
+            &passed,
+            &none,
+            &json!([{"conclusion": "failure"}]),
+            false
+        ));
         assert!(needs_model(&passed, &none, &none, true));
     }
 }
