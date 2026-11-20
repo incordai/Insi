@@ -65,6 +65,8 @@ pub fn lesson_write_request(lesson: &Lesson, repo: &str) -> Value {
             "arguments": {
                 "kind": "issue",
                 "cwd": repo,
+                // The engine files every lesson under a topic and refuses one without (lesson_write).
+                "topic": lesson.topic,
                 "task_id": lesson.evidence,
                 "record": {
                     "issue": lesson.issue,
@@ -104,6 +106,7 @@ pub fn decision_request(decision: &str, why: &str, repo: &str, tags: &[String]) 
             "arguments": {
                 "kind": "decision",
                 "cwd": repo,
+                "topic": "Insi improvement loop",
                 "record": {
                     "decision": decision,
                     "why": why,
@@ -261,7 +264,15 @@ pub fn tool_call(addr: SocketAddr, name: &str, arguments: Value) -> Result<Value
     let raw = post(addr, RPC_PATH, &request.to_string())?;
     let reply: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     if reply.get("error").is_some() || reply["result"]["isError"] == true {
-        return Err("memory engine refused the tool call".into());
+        // The engine's own reason (e.g. a missing topic), so a refusal can be fixed without replaying the call.
+        let why = reply["error"]["message"]
+            .as_str()
+            .or_else(|| reply["result"]["content"][0]["text"].as_str())
+            .unwrap_or("no reason given");
+        return Err(format!(
+            "memory engine refused the tool call: {}",
+            why.chars().take(300).collect::<String>()
+        ));
     }
     tool_content(&reply)
 }
@@ -378,6 +389,31 @@ mod tests {
             .filter_map(Value::as_str)
             .collect();
         assert_eq!(tags, ["insi", "verified:check", "topic:watchman"]);
+    }
+
+    /// The engine refuses a lesson that names no topic (live run on the Mac, 2026-11-20: Insi's improvement was
+    /// kept but its decision never reached memory); every lesson_write Insi sends carries one.
+    #[test]
+    fn every_lesson_and_decision_names_its_topic() {
+        let issue = lesson_write_request(&lesson(), "D:/Projects/watchman");
+        assert_eq!(issue["params"]["arguments"]["topic"], "watchman");
+        let decision = decision_request("kept", "measured", "D:/Projects/watchman", &[]);
+        let topic = decision["params"]["arguments"]["topic"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            !topic.trim().is_empty(),
+            "a decision names its topic: {decision}"
+        );
+    }
+
+    #[test]
+    fn a_refused_tool_call_says_the_engines_reason() {
+        let (addr, _engine) = engine_replying(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"lesson_write: every lesson names its topic"}}"#,
+        );
+        let err = tool_call(addr, "lesson_write", json!({})).expect_err("refused");
+        assert!(err.contains("every lesson names its topic"), "{err}");
     }
 
     /// One request against a stand-in engine on a free local port: the

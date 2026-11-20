@@ -138,7 +138,8 @@ pub fn finish(
         summary["benchmark"] = Value::Object(metrics);
     }
     let args = json!({"cwd":repo,"agent_id":"insi","write_key":format!("suggest:{run}:terminal-v1"),
-        "kind":"decision","record":{"decision":format!("Optional code improvement outcome: {status}"),
+        // The engine files every lesson under a topic and refuses one without (lesson_write).
+        "kind":"decision","topic":"Insi suggestions","record":{"decision":format!("Optional code improvement outcome: {status}"),
         "why":summary.to_string(),"tags":["insi","suggestion",format!("outcome:{status}")]}});
     let payload = serde_json::to_string(&args).map_err(|e| e.to_string())?;
     if !insi_core::secrets::scan_diff(&format!("+{payload}")).is_empty() {

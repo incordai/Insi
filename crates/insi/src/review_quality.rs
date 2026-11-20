@@ -31,7 +31,7 @@ pub fn feedback(report: &Path, id: &str, verdict: &str, note: &str) -> Result<Va
     insi_memory::incord::tool_call(
         insi_memory::incord::address()?,
         "lesson_write",
-        json!({"cwd":repo,"agent_id":"insi","kind":"decision","write_key":format!("review:{}:{id}:{verdict}",value["head"].as_str().unwrap_or("unknown")),"record":{"decision":format!("Review feedback: {verdict}"),"why":why,"tags":["insi","review-feedback"]}}),
+        json!({"cwd":repo,"agent_id":"insi","kind":"decision","topic":"Insi review feedback","write_key":format!("review:{}:{id}:{verdict}",value["head"].as_str().unwrap_or("unknown")),"record":{"decision":format!("Review feedback: {verdict}"),"why":why,"tags":["insi","review-feedback"]}}),
     )
 }
 
