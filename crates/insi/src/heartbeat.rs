@@ -17,6 +17,10 @@ struct State {
     failures: u64,
     status: String,
     error: Option<String>,
+    /// Why the last run did not happen when it is waiting on something that is not a failure (uncommitted work):
+    /// the words the owner reads. Cleared by the next run.
+    #[serde(default)]
+    waiting: Option<String>,
 }
 
 /// Wall clock seconds allow another process to resume the schedule.
@@ -162,18 +166,29 @@ pub fn run(flags: &Flags) -> Result<(), String> {
             continue;
         }
         // Record before invoking workers; crashes also count toward the failure cap.
+        let failures_before = state.failures;
         state.attempts += 1;
         state.failures += 1;
         state.next_due = current.saturating_add(interval);
         state.status = "running".into();
         state.error = None;
+        state.waiting = None;
         save(&dir, &state)?;
         // Return delivery evidence while retaining the scheduler's existing error accounting.
-        let outcome =
-            crate::autonomous::cycle(&cycle_flags, &dir).map(|report| println!("{report}"));
+        let outcome = crate::autonomous::cycle(&cycle_flags, &dir).map(|report| {
+            println!("{report}");
+            report
+        });
         state.next_due = now()?.saturating_add(interval);
         match &outcome {
-            Ok(()) => {
+            // WAITING IS NOT A FAILURE (the owner, 2026-11-20): the run was held back (uncommitted work), so the
+            // failure count is what it was before this attempt, and no number of waits reaches the pause.
+            Ok(report) if report["status"] == "waiting" => {
+                state.failures = failures_before;
+                state.status = "waiting".into();
+                state.waiting = report["reason"].as_str().map(str::to_string);
+            }
+            Ok(_) => {
                 state.failures = 0;
                 state.status = "completed".into();
             }
@@ -182,6 +197,7 @@ pub fn run(flags: &Flags) -> Result<(), String> {
                 state.error = Some(error.clone());
             }
         }
+        let outcome = outcome.map(|_| ());
         save(&dir, &state)?;
         println!(
             "heartbeat {}: {}; next due {}",

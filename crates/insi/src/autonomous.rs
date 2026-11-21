@@ -266,6 +266,42 @@ fn summary(value: &Value) -> Value {
     }
 }
 
+/// The report of a heartbeat that did not run because the checkout holds uncommitted work: `status` "waiting" (read by
+/// `heartbeat.rs`, which neither counts it as a failure nor pauses on it) and `reason` in words (the engine shows it
+/// as the run's outcome). `ping` asks the engine's proxy to have the agent working in `repo` commit; what it answered,
+/// or why it could not, is `proxy`. A failed ping never fails the wait: the next run asks again.
+fn waiting(
+    repo: &Path,
+    porcelain: &str,
+    ping: &dyn Fn(&Path, usize) -> Result<Value, String>,
+) -> Value {
+    let files = porcelain.lines().filter(|l| !l.trim().is_empty()).count();
+    let proxy = match ping(repo, files) {
+        Ok(answer) => answer,
+        Err(why) => json!({"asked": [], "unavailable": why}),
+    };
+    json!({
+        "status": "waiting",
+        "reason": format!(
+            "{files} uncommitted file{}; Insi runs when they are committed",
+            if files == 1 { "" } else { "s" }
+        ),
+        "uncommitted": files,
+        "proxy": proxy,
+    })
+}
+
+/// Tell the engine's proxy that Insi waits on `files` uncommitted files in `repo`: the proxy asks the agent working
+/// there to commit (and does nothing when no agent is working there). Local engine only (`INCORD_MEMORY_ADDR`).
+fn ping_proxy(repo: &Path, files: usize) -> Result<Value, String> {
+    insi_memory::incord::http(
+        insi_memory::incord::address()?,
+        "POST",
+        "/v1/memory/insi/waiting",
+        &json!({"cwd": repo.display().to_string(), "uncommitted": files}),
+    )
+}
+
 /// Run the complete cycle and expose its durable backlog through heartbeat --queue.
 pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
     let repo =
@@ -286,8 +322,13 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
             .map(PathBuf::from)
             .unwrap_or_else(|| repo.join(".insi/heartbeat.json")),
     )?;
-    if !git(&repo, &["status", "--porcelain"])?.is_empty() {
-        return Err("heartbeat needs a clean committed checkout".into());
+    // UNCOMMITTED CHANGES ARE WAITING, NOT A FAILURE (the owner, 2026-11-20: the Mac refused a run for 3 uncommitted
+    // files of the project's agent, which was still working, and the refusal counted toward the pause). Insi does not
+    // run on a dirty checkout: it says why, asks the engine's proxy to have the agent commit its finished work, and
+    // the next scheduled run tries again (`heartbeat.rs` keeps the failure count as it was).
+    let uncommitted = git(&repo, &["status", "--porcelain"])?;
+    if !uncommitted.is_empty() {
+        return Ok(waiting(&repo, &uncommitted, &ping_proxy));
     }
     let baseline = git(&repo, &["rev-parse", "HEAD"])?;
     reconcile(&mut queue, &baseline);
@@ -556,8 +597,9 @@ pub fn cycle(flags: &Flags, state_dir: &Path) -> Result<Value, String> {
 
 #[cfg(test)]
 mod needs_model_tests {
-    use super::needs_model;
+    use super::{needs_model, waiting};
     use serde_json::json;
+    use std::path::{Path, PathBuf};
 
     /// The owner, 2026-11-19: testing never calls a model; a passing heartbeat with nothing open asks none.
     #[test]
@@ -599,5 +641,37 @@ mod needs_model_tests {
             false
         ));
         assert!(needs_model(&passed, &none, &none, true));
+    }
+
+    /// Uncommitted files make a waiting report that says how many and why, and ask the proxy with the project; a
+    /// proxy that cannot be reached is named in the report and never fails the wait.
+    #[test]
+    fn uncommitted_files_wait_and_ping_the_proxy_with_the_project() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let report = waiting(
+            Path::new("/p/game"),
+            "?? one.txt\n M two.txt\n M three.txt\n",
+            &|repo, files| {
+                asked.borrow_mut().push((repo.to_path_buf(), files));
+                Ok(json!({"asked": ["s1"]}))
+            },
+        );
+        assert_eq!(report["status"], "waiting");
+        assert_eq!(
+            report["reason"],
+            "3 uncommitted files; Insi runs when they are committed"
+        );
+        assert_eq!(report["proxy"]["asked"][0], "s1");
+        assert_eq!(*asked.borrow(), vec![(PathBuf::from("/p/game"), 3)]);
+
+        let one = waiting(Path::new("/p/game"), "?? one.txt", &|_, _| {
+            Err("the memory engine is unreachable".into())
+        });
+        assert_eq!(
+            one["reason"],
+            "1 uncommitted file; Insi runs when they are committed"
+        );
+        assert_eq!(one["status"], "waiting");
+        assert_eq!(one["proxy"]["unavailable"], "the memory engine is unreachable");
     }
 }
