@@ -608,11 +608,11 @@ fn watch_init_cmd(flags: &Flags) -> Result<(), String> {
     };
     let changed = watch_templates::install(&repo, &command)?;
     println!(
-        ".incord/watch.toml: {} (shared with Inmem; optional tool templates are commented)",
+        ".incord/watch.toml: {} (shared with Inmem; checks that fit this project and whose tool is here are enabled, the rest stay commented templates)",
         if changed {
-            "starter catalog added"
+            "Insi checks added"
         } else {
-            "existing catalog preserved"
+            "nothing new to add; existing checks preserved"
         }
     );
     Ok(())

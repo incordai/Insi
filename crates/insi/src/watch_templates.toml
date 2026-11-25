@@ -3,8 +3,11 @@
 # Only this segment belongs to Insi; preserve all Inmem/agent modules outside it.
 # This is an agent-maintained Inmem watch file, not a claim every scanner is enabled.
 # Active [[check]] entries run on Inmem's scheduler. Commented entries are templates.
+# Insi enables, at the end of this module, the templates that fit this project and whose
+# program answers here (Watchman ships gitleaks and trivy); the rest stay commented.
+# The INSI ENABLED line names them: one removed from this file is never enabled again.
 # Agents: read the existing file first; preserve user checks, names, schedules and edits.
-# Select checks for the actual stack, install/verify prerequisites, run each command once,
+# Select checks for the actual stack, verify prerequisites, run each command once,
 # then append/uncomment only the applicable checks. Give checks stable unique names.
 # Record incomplete/missing tooling as a gap; never use `|| true` to hide failures.
 # Use project-specific paths, roles, routes, fixtures and expected behavior.
@@ -33,13 +36,15 @@
 # Native memory: valgrind --error-exitcode=1 --leak-check=full ./build/test-program
 # Rust unsafe code: cargo +nightly miri test (requires a configured Miri toolchain)
 
-# --- Secrets: verify Gitleaks is installed; redact findings ---
+# --- Secrets: the committed history (build folders are never read); redact findings ---
+# A secret that ever reached history is leaked. Record a false positive's fingerprint in
+# .gitleaksignore (gitleaks reads it by default), never weaken the command.
 # [[check]]
 # name = "insi: security secrets"
-# command = "gitleaks dir --redact --exit-code 1 ."
+# command = "gitleaks git --redact --exit-code 1 ."
 # every_minutes = 1440
-# timeout_secs = 300
-# paths = ["src", "config", "package.json", "Cargo.toml"]
+# timeout_secs = 600
+# paths = []
 
 # --- Source analysis: freeze required rules outside untrusted PR control ---
 # [[check]]
@@ -65,12 +70,14 @@
 # dotnet list package --vulnerable --include-transitive (requires an assertion wrapper;
 # listing findings alone may exit zero and must not be treated as a passing check).
 
-# --- Filesystem / container / infrastructure configuration ---
+# --- Dependencies / container / infrastructure configuration ---
+# Secrets are left to gitleaks; lockfiles name the dependencies, so build, package and
+# agent folders are skipped.
 # [[check]]
 # name = "insi: security dependencies and configuration"
-# command = "trivy fs --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --exit-code 1 ."
+# command = 'trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --quiet --timeout 15m --skip-dirs "**/target" --skip-dirs "**/node_modules" --skip-dirs .incord --skip-dirs .claude .'
 # every_minutes = 1440
-# timeout_secs = 600
+# timeout_secs = 1200
 # paths = ["Dockerfile", "compose.yaml", "infra", "Cargo.lock", "package-lock.json"]
 
 # --- Application contracts: create this script for the app before enabling ---
