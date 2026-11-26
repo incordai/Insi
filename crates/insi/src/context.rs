@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use insi_connectors::{ci, command, docs, gather, render, Query, Source};
+use insi_connectors::{ci, command, docs, errors, gather, render, Query, Source};
 use insi_core::Config;
 
 /// Items shown when no limit is given.
@@ -38,6 +38,10 @@ pub fn text(a: &Ask) -> String {
     let topics = a.config.topics(a.base);
     let topic = a.topic.unwrap_or(topics.base);
     let docs = docs::Docs::new(a.repo);
+    let runtime_errors = errors::ErrorSource {
+        store: errors::Store::default_store(),
+        repo: a.repo.to_path_buf(),
+    };
     let gh = ci::GhRuns {
         repo: a.repo.to_path_buf(),
     };
@@ -55,7 +59,7 @@ pub fn text(a: &Ask) -> String {
             dir: a.repo.to_path_buf(),
         })
         .collect();
-    let mut sources: Vec<&dyn Source> = vec![&docs];
+    let mut sources: Vec<&dyn Source> = vec![&docs, &runtime_errors];
     if a.with_ci {
         sources.push(&ci);
     }
