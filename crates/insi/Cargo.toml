@@ -26,6 +26,7 @@ insi-connectors.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
+flate2.workspace = true
 # The worker's sandbox (`insi sandbox run`, src/sandbox.rs): our own, the library behind `insbx`, pinned to a commit.
 incord-sandbox.workspace = true
 

@@ -24,6 +24,7 @@ repository = "https://github.com/incordai/insi"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # Test-only generators; no subprocess/fork features or runtime dependency.
 proptest = { version = "1", default-features = false, features = ["std"] }
 # Versions as well as paths, so each crate can be published: crates.io

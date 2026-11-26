@@ -324,6 +324,16 @@ fn the_probe_runs_the_real_program() {
     assert!(program_answers(&needs_cargo));
 }
 
+/// A repository configured with `.insi/` enables the runtime-errors watch check when `insi` is available.
+#[test]
+fn insi_project_enables_runtime_errors_check() {
+    let root = scratch();
+    std::fs::create_dir(root.join(".insi")).expect("insi dir");
+    assert!(install_with(&root, &[], EVERY_PROGRAM).expect("install"));
+    let text = std::fs::read_to_string(root.join(".incord/watch.toml")).expect("read");
+    assert_eq!(names(&text), ["insi: runtime errors"]);
+}
+
 /// A redirected config path must not modify another checkout's owner file.
 #[cfg(unix)]
 #[test]

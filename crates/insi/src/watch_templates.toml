@@ -94,6 +94,14 @@
 # private reports and cleanup. Reference fixtures are shipped in the Insi source;
 # these fixture scripts are not automatically copied into an unrelated app.
 
+# --- Runtime errors: check Insi's local error server for unresolved app/SDK errors ---
+# [[check]]
+# name = "insi: runtime errors"
+# command = "insi errors check --repo ."
+# every_minutes = 5
+# timeout_secs = 20
+# paths = []
+
 # --- Network / browser / memory extensions ---
 # Nmap: explicit lab target and ports only; open ports are observations, not exploits.
 # sqlmap/Metasploit: disposable targets only; normalize evidence and failure exits.

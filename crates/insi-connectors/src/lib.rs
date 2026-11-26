@@ -28,6 +28,7 @@
 pub mod ci;
 pub mod command;
 pub mod docs;
+pub mod errors;
 
 use insi_core::topic::{covers, related, Topics};
 use insi_core::Trust;

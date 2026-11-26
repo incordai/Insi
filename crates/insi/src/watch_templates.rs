@@ -105,6 +105,17 @@ const AUTO: &[Auto] = &[
         needs: &[],
         fits: has_application_script,
     },
+    Auto {
+        name: "insi: runtime errors",
+        command: "insi errors check --repo .",
+        every_minutes: 5,
+        timeout_secs: 20,
+        runs: "insi errors check",
+        program: "insi",
+        probe: &["--version"],
+        needs: &[],
+        fits: has_insi_project,
+    },
 ];
 
 fn is_git_repository(repo: &Path) -> bool {
@@ -121,6 +132,10 @@ fn has_source_rules(repo: &Path) -> bool {
 
 fn has_application_script(repo: &Path) -> bool {
     repo.join("scripts/security/check_application.py").is_file()
+}
+
+fn has_insi_project(repo: &Path) -> bool {
+    repo.join(".insi").is_dir()
 }
 
 /// The files trivy reads dependencies or configuration from.

@@ -55,6 +55,7 @@ mod context;
 mod doctor;
 #[cfg(test)]
 mod engine_stub;
+mod errors_server;
 mod experiment;
 mod harness_pr;
 mod heartbeat;
@@ -138,7 +139,9 @@ const USAGE: &str = "usage:
                 that the base lacks)
   insi mcp      [--lessons <file>]      (MCP on stdio: insi_briefing, insi_lessons_for_error, insi_context)
   insi context  [--repo <dir>] [--topic t] [--query \"words\"] [--limit N] [--no-ci]
-                (the repository's docs, failed CI runs and [[connectors]] for a topic, with trust)
+                (the repository's docs, failed CI runs, runtime errors and [[connectors]] for a topic, with trust)
+  insi errors   serve|dsn|list|check|resolve|ignore|reopen
+                (lightweight Sentry-compatible runtime error server and per-project error check)
   insi hook     [--lessons <file>]      (Claude Code hook: lessons before an edit, after a failure)
   insi issue    --number N [--repo <dir>] [--worker \"<cmd {prompt}>\"] [--lessons <file>] [--ready]
                 (work a GitHub issue labelled trusted_issue_label; a draft PR if test_cmd passes)
@@ -243,6 +246,9 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some((command, rest)) = args.split_first() else {
         return Err(USAGE.to_string());
     };
+    if command == "errors" {
+        return errors_server::cli(rest);
+    }
     let flags = Flags::parse(rest)?;
     if command == "review-publish" {
         let repo =
