@@ -116,7 +116,38 @@ jobs:
           path: .claude/temp/artifact-source/payload.txt
           include-hidden-files: true
           if-no-files-found: error
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      # actions/download-artifact@v8.0.2 can fail immediately after upload finalization with
+      # "No artifacts found for ID" when GitHub's artifact service lags (actions/download-artifact#505).
+      - name: Download artifact (attempt 1)
+        id: download_1
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-action-smoke
+          path: .claude/temp/artifact-download
+          merge-multiple: true
+      - name: Wait before retry 2
+        if: steps.download_1.outcome == 'failure'
+        run: |
+          rm -rf .claude/temp/artifact-download
+          sleep 5
+      - name: Download artifact (attempt 2)
+        id: download_2
+        if: steps.download_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-action-smoke
+          path: .claude/temp/artifact-download
+          merge-multiple: true
+      - name: Wait before retry 3
+        if: steps.download_2.outcome == 'failure'
+        run: |
+          rm -rf .claude/temp/artifact-download
+          sleep 10
+      - name: Download artifact (attempt 3)
+        if: steps.download_2.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-action-smoke
           path: .claude/temp/artifact-download
