@@ -672,6 +672,9 @@ mod needs_model_tests {
             "1 uncommitted file; Insi runs when they are committed"
         );
         assert_eq!(one["status"], "waiting");
-        assert_eq!(one["proxy"]["unavailable"], "the memory engine is unreachable");
+        assert_eq!(
+            one["proxy"]["unavailable"],
+            "the memory engine is unreachable"
+        );
     }
 }

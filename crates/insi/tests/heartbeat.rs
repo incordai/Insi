@@ -147,7 +147,11 @@ fn committed() -> TestResult<PathBuf> {
             .args(["-c", "user.name=Test", "-c", "user.email=test@localhost"])
             .args(args)
             .output()?;
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         Ok(())
     };
     std::fs::create_dir_all(repo.join(".insi"))?;
@@ -202,12 +206,20 @@ fn uncommitted_work_waits_and_asks_the_engine_to_have_it_committed() -> TestResu
             if let Some((head, body)) = text.split_once("\r\n\r\n") {
                 let want = head
                     .lines()
-                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                    })
                     .unwrap_or(0);
                 if body.len() >= want {
                     let reply = r#"{"asked":["session-1"]}"#;
-                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len())
-                        .map_err(|e| e.to_string())?;
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .map_err(|e| e.to_string())?;
                     return Ok(text);
                 }
             }
@@ -217,14 +229,26 @@ fn uncommitted_work_waits_and_asks_the_engine_to_have_it_committed() -> TestResu
         }
     });
     let output = tick(&repo, &address, &["--interval-secs", "1"])?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let request = server.join().map_err(|_| "ping server panicked")??;
-    assert!(request.starts_with("POST /v1/memory/insi/waiting "), "{request}");
+    assert!(
+        request.starts_with("POST /v1/memory/insi/waiting "),
+        "{request}"
+    );
     let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").ok_or("body")?.1)?;
     assert_eq!(body["uncommitted"], 2);
     let named = std::fs::canonicalize(&repo)?;
     assert_eq!(
-        std::fs::canonicalize(body["cwd"].as_str().ok_or("cwd")?.trim_start_matches(r"\\?\"))?,
+        std::fs::canonicalize(
+            body["cwd"]
+                .as_str()
+                .ok_or("cwd")?
+                .trim_start_matches(r"\\?\")
+        )?,
         named
     );
     let waiting = state(&repo)?;
@@ -237,17 +261,36 @@ fn uncommitted_work_waits_and_asks_the_engine_to_have_it_committed() -> TestResu
     );
     let printed = String::from_utf8_lossy(&output.stdout);
     assert!(printed.contains(r#""status":"waiting""#), "{printed}");
-    assert!(printed.contains("session-1"), "the proxy's answer is in the report: {printed}");
+    assert!(
+        printed.contains("session-1"),
+        "the proxy's answer is in the report: {printed}"
+    );
 
     // The agent commits; the next scheduled run goes ahead.
     let committed = Command::new("git")
         .current_dir(&repo)
-        .args(["-c", "user.name=Test", "-c", "user.email=test@localhost", "add", "."])
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@localhost",
+            "add",
+            ".",
+        ])
         .status()?;
     assert!(committed.success());
     assert!(Command::new("git")
         .current_dir(&repo)
-        .args(["-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "--quiet", "-m", "Agent work"])
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@localhost",
+            "commit",
+            "--quiet",
+            "-m",
+            "Agent work"
+        ])
         .status()?
         .success());
     std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -255,11 +298,18 @@ fn uncommitted_work_waits_and_asks_the_engine_to_have_it_committed() -> TestResu
     let done = state(&repo)?;
     assert_eq!(done["attempts"], 2, "{done}");
     assert_eq!(done["waiting"], Value::Null);
-    assert_ne!(done["status"], "waiting", "a committed checkout is not held back: {done}");
+    assert_ne!(
+        done["status"], "waiting",
+        "a committed checkout is not held back: {done}"
+    );
     if cfg!(unix) {
         // The whole cycle runs. (On Windows the observation clone of a `\\?\` path is refused by git, which is
         // Insi's own limit and not what this test is about: it is past the uncommitted check either way.)
-        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
         assert_eq!(done["status"], "completed", "{done}");
         assert_eq!(done["failures"], 0);
     }
@@ -274,7 +324,9 @@ fn waiting_three_times_does_not_pause_and_keeps_earlier_failures() -> TestResult
     let engine = closed()?;
     // Three scheduled runs, each its own process, as the engine starts them.
     for _ in 0..3 {
-        assert!(tick(&repo, &engine, &["--interval-secs", "1"])?.status.success());
+        assert!(tick(&repo, &engine, &["--interval-secs", "1"])?
+            .status
+            .success());
         std::thread::sleep(std::time::Duration::from_millis(1100));
     }
     let after = state(&repo)?;
@@ -284,15 +336,24 @@ fn waiting_three_times_does_not_pause_and_keeps_earlier_failures() -> TestResult
     // A fourth run is not refused as paused.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let fourth = tick(&repo, &engine, &["--interval-secs", "1"])?;
-    assert!(fourth.status.success(), "{}", String::from_utf8_lossy(&fourth.stderr));
+    assert!(
+        fourth.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fourth.stderr)
+    );
     assert_eq!(state(&repo)?["attempts"], 4);
 
     // Failures from before stay counted through a wait: the wait neither adds one nor wipes them.
     let mut earlier = state(&repo)?;
     earlier["failures"] = json!(2);
     earlier["next_due"] = json!(0);
-    std::fs::write(repo.join(".git/insi-heartbeat/state.json"), earlier.to_string())?;
-    assert!(tick(&repo, &engine, &["--interval-secs", "1"])?.status.success());
+    std::fs::write(
+        repo.join(".git/insi-heartbeat/state.json"),
+        earlier.to_string(),
+    )?;
+    assert!(tick(&repo, &engine, &["--interval-secs", "1"])?
+        .status
+        .success());
     let kept = state(&repo)?;
     assert_eq!(kept["failures"], 2, "{kept}");
     assert_eq!(kept["status"], "waiting");
